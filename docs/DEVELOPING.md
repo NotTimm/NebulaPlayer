@@ -20,18 +20,15 @@ cargo build --release
 
 On a laptop, build gently: `nice -n 19 cargo build -j 4`.
 
-Windows: download an mpv dev package (`mpv-dev-x86_64-*.7z` from
-https://github.com/shinchiro/mpv-winbuild-cmake/releases), make an MSVC
-import library from mpv's `mpv.def`
-(`lib /def:mpv.def /name:libmpv-2.dll /out:mpv.lib /machine:x64`), and
-point the build at it:
+libmpv isn't linked: the app loads it when it starts (`src/mpv.rs`), so
+it builds without libmpv and, without it, opens and says what to install.
+To play anything it needs `libmpv.so.2` (Linux), `libmpv-2.dll` next to
+the exe (Windows; from the `mpv-dev-x86_64-*.7z` builds at
+https://sourceforge.net/projects/mpv-player-windows/files/libmpv/) or
+`brew install mpv` (macOS).
 
-```powershell
-$env:MPV_LIB_DIR = "C:\path\to\mpv-dev"
-cargo build --release
-```
-
-Ship `libmpv-2.dll` next to `nebula-player.exe`.
+The app is a Wayland client on Wayland desktops (COSMIC, KDE, GNOME) and
+uses X11 only in X11 sessions; mpv picks the same.
 
 ## Testing without a server
 
@@ -47,7 +44,8 @@ python3 tools/mock-jellyfin.py 8096
 ## How it's put together
 
 - `src/mpv.rs`: a small binding to libmpv's client API (only the calls
-  needed, present since libmpv 1.x) and the `Player`. mpv owns its own
+  needed, present since libmpv 1.x, loaded at run time) and the
+  `Player`. mpv owns its own
   window and on-screen controller; an event thread keeps a `State`
   that the UI polls twice a second.
 - `src/jellyfin.rs`: the API client (sign-in, home sections, browsing,

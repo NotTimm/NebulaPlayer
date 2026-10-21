@@ -213,6 +213,7 @@ pub enum Message {
     UserDataSaved(Result<(), String>),
     Back,
     Scrolled(f32),
+    WindowOpened,
     SearchInput(String),
     SearchSubmit,
     SearchResults(String, Result<Vec<Item>, String>),
@@ -267,6 +268,10 @@ pub struct App {
     images_pending: HashSet<Key>,
     player: Option<mpv::Player>,
     playback: Option<Playback>,
+    /// A file from the command line, played once the window is up: mpv
+    /// setting up its renderer while the app sets up its own has crashed
+    /// graphics drivers.
+    startup_file: Option<PathBuf>,
     error: Option<String>,
 }
 
@@ -811,6 +816,7 @@ impl Application for App {
             images_pending: HashSet::new(),
             player: None,
             playback: None,
+            startup_file: flags,
             error: None,
         };
         app.set_header_title("Nebula Player".into());
@@ -818,11 +824,7 @@ impl Application for App {
             Some(id) => app.set_window_title("Nebula Player".into(), id),
             None => Task::none(),
         };
-        let mut tasks = vec![title, app.use_account(account), app.scan_local()];
-        // A file given on the command line plays right away.
-        if let Some(path) = flags {
-            tasks.push(app.play_local(path));
-        }
+        let tasks = vec![title, app.use_account(account), app.scan_local()];
         (app, Task::batch(tasks))
     }
 
@@ -900,6 +902,12 @@ impl Application for App {
 
     fn subscription(&self) -> Subscription<Self::Message> {
         let mut subs = Vec::new();
+        if self.startup_file.is_some() {
+            subs.push(cosmic::iced::event::listen_with(|event, _, _| match event {
+                cosmic::iced::Event::Window(cosmic::iced::window::Event::Opened { .. }) => Some(Message::WindowOpened),
+                _ => None,
+            }));
+        }
         if self.player.is_some() {
             subs.push(time::every(Duration::from_millis(500)).map(|_| Message::PlayerTick));
         }
@@ -937,6 +945,15 @@ impl Application for App {
 impl App {
     fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::WindowOpened => {
+                if let Some(path) = self.startup_file.take() {
+                    // A moment more for the window's first frame.
+                    return cosmic::task::future(async move {
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                        Message::PlayLocal(path)
+                    });
+                }
+            }
             Message::Scrolled(y) => {
                 self.scroll_y = y;
                 // Near the bottom of a library, its next page loads.

@@ -6,7 +6,8 @@
 //! thread waits on mpv's events and keeps a [`State`] the UI polls.
 //!
 //! Only the handful of client API calls the app needs are bound here, all
-//! present since libmpv 1.x, so any distro's libmpv works.
+//! present since libmpv 1.x, so any distro's libmpv works. libmpv is
+//! loaded when first needed (see [`Api`]), not linked.
 
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::sync::{Arc, Mutex};
@@ -54,25 +55,99 @@ const END_STOP: c_int = 2;
 const END_QUIT: c_int = 3;
 const END_ERROR: c_int = 4;
 
-// libmpv.so on Linux; on Windows mpv.lib, the import library CI makes
-// for libmpv-2.dll (see build.rs).
-#[link(name = "mpv")]
-unsafe extern "C" {
-    fn mpv_create() -> *mut MpvHandle;
-    fn mpv_initialize(ctx: *mut MpvHandle) -> c_int;
-    fn mpv_terminate_destroy(ctx: *mut MpvHandle);
-    fn mpv_set_option_string(ctx: *mut MpvHandle, name: *const c_char, data: *const c_char) -> c_int;
-    fn mpv_set_property_string(ctx: *mut MpvHandle, name: *const c_char, data: *const c_char) -> c_int;
-    fn mpv_command(ctx: *mut MpvHandle, args: *const *const c_char) -> c_int;
-    fn mpv_observe_property(ctx: *mut MpvHandle, userdata: u64, name: *const c_char, format: c_int) -> c_int;
-    fn mpv_wait_event(ctx: *mut MpvHandle, timeout: f64) -> *mut MpvEvent;
-    fn mpv_error_string(error: c_int) -> *const c_char;
-    fn mpv_client_api_version() -> std::ffi::c_ulong;
+/// The libmpv functions used, looked up when first needed. Loading it at
+/// run time (rather than linking it) means the app starts without libmpv
+/// installed and can say so, and Windows needs no import library: the
+/// DLL just sits next to the exe.
+struct Api {
+    create: unsafe extern "C" fn() -> *mut MpvHandle,
+    initialize: unsafe extern "C" fn(*mut MpvHandle) -> c_int,
+    terminate_destroy: unsafe extern "C" fn(*mut MpvHandle),
+    set_option_string: unsafe extern "C" fn(*mut MpvHandle, *const c_char, *const c_char) -> c_int,
+    set_property_string: unsafe extern "C" fn(*mut MpvHandle, *const c_char, *const c_char) -> c_int,
+    command: unsafe extern "C" fn(*mut MpvHandle, *const *const c_char) -> c_int,
+    observe_property: unsafe extern "C" fn(*mut MpvHandle, u64, *const c_char, c_int) -> c_int,
+    wait_event: unsafe extern "C" fn(*mut MpvHandle, f64) -> *mut MpvEvent,
+    error_string: unsafe extern "C" fn(c_int) -> *const c_char,
+    client_api_version: unsafe extern "C" fn() -> std::ffi::c_ulong,
+    /// Kept loaded for as long as the app runs.
+    _lib: libloading::Library,
+}
+
+/// Where libmpv is looked for, newest first.
+#[cfg(target_os = "linux")]
+const LIBRARY_NAMES: &[&str] = &["libmpv.so.2", "libmpv.so.1", "libmpv.so"];
+#[cfg(windows)]
+const LIBRARY_NAMES: &[&str] = &["libmpv-2.dll", "mpv-2.dll", "mpv-1.dll"];
+#[cfg(target_os = "macos")]
+const LIBRARY_NAMES: &[&str] = &[
+    "libmpv.2.dylib",
+    "libmpv.dylib",
+    "/opt/homebrew/lib/libmpv.dylib",
+    "/usr/local/lib/libmpv.dylib",
+];
+
+/// What to tell someone whose system has no libmpv.
+#[cfg(target_os = "linux")]
+pub const INSTALL_HINT: &str =
+    "Install libmpv to play videos: \"sudo dnf install mpv-libs\" on Fedora, \"sudo apt install libmpv2\" on Debian or Ubuntu.";
+#[cfg(windows)]
+pub const INSTALL_HINT: &str = "libmpv-2.dll is missing: it belongs next to nebula-player.exe. Reinstalling Nebula Player puts it back.";
+#[cfg(target_os = "macos")]
+pub const INSTALL_HINT: &str = "Install libmpv to play videos: \"brew install mpv\".";
+
+fn load() -> Result<Api, String> {
+    let mut last = String::new();
+    for name in LIBRARY_NAMES {
+        // SAFETY: loading libmpv runs only its (benign) library constructors.
+        let lib = match unsafe { libloading::Library::new(name) } {
+            Ok(lib) => lib,
+            Err(e) => {
+                last = e.to_string();
+                continue;
+            }
+        };
+        // SAFETY: each symbol is looked up with libmpv's documented signature.
+        unsafe {
+            macro_rules! sym {
+                ($name:literal) => {
+                    *lib.get($name).map_err(|e| format!("{name}: {e}"))?
+                };
+            }
+            let api = Api {
+                create: sym!(b"mpv_create\0"),
+                initialize: sym!(b"mpv_initialize\0"),
+                terminate_destroy: sym!(b"mpv_terminate_destroy\0"),
+                set_option_string: sym!(b"mpv_set_option_string\0"),
+                set_property_string: sym!(b"mpv_set_property_string\0"),
+                command: sym!(b"mpv_command\0"),
+                observe_property: sym!(b"mpv_observe_property\0"),
+                wait_event: sym!(b"mpv_wait_event\0"),
+                error_string: sym!(b"mpv_error_string\0"),
+                client_api_version: sym!(b"mpv_client_api_version\0"),
+                _lib: lib,
+            };
+            log::info!("loaded {name}");
+            return Ok(api);
+        }
+    }
+    log::warn!("libmpv not found: {last}");
+    Err(INSTALL_HINT.to_string())
+}
+
+fn api() -> Result<&'static Api, String> {
+    static API: std::sync::OnceLock<Result<Api, String>> = std::sync::OnceLock::new();
+    API.get_or_init(load).as_ref().map_err(|e| e.clone())
+}
+
+/// A handle only exists once the library has loaded.
+fn loaded() -> &'static Api {
+    api().expect("libmpv loaded before any handle")
 }
 
 fn error_string(code: c_int) -> String {
     // SAFETY: mpv returns a static string for every error code.
-    unsafe { CStr::from_ptr(mpv_error_string(code)) }.to_string_lossy().into_owned()
+    unsafe { CStr::from_ptr((loaded().error_string)(code)) }.to_string_lossy().into_owned()
 }
 
 fn cstr(s: &str) -> CString {
@@ -80,10 +155,11 @@ fn cstr(s: &str) -> CString {
 }
 
 /// libmpv's client API version as "major.minor", for the About page.
-pub fn api_version() -> String {
+pub fn api_version() -> Option<String> {
+    let api = api().ok()?;
     // SAFETY: a plain getter with no arguments.
-    let v = unsafe { mpv_client_api_version() } as u64;
-    format!("{}.{}", v >> 16, v & 0xffff)
+    let v = unsafe { (api.client_api_version)() } as u64;
+    Some(format!("{}.{}", v >> 16, v & 0xffff))
 }
 
 /// The mpv handle. mpv's client API is thread-safe, so it's shared between
@@ -97,7 +173,7 @@ unsafe impl Sync for Handle {}
 impl Drop for Handle {
     fn drop(&mut self) {
         // SAFETY: the pointer came from mpv_create and is dropped once.
-        unsafe { mpv_terminate_destroy(self.0) };
+        unsafe { (loaded().terminate_destroy)(self.0) };
     }
 }
 
@@ -105,7 +181,7 @@ impl Handle {
     fn set_option(&self, name: &str, value: &str) -> Result<(), String> {
         let (n, v) = (cstr(name), cstr(value));
         // SAFETY: valid handle and NUL-terminated strings for the call.
-        let r = unsafe { mpv_set_option_string(self.0, n.as_ptr(), v.as_ptr()) };
+        let r = unsafe { (loaded().set_option_string)(self.0, n.as_ptr(), v.as_ptr()) };
         if r < 0 {
             return Err(format!("mpv option {name}={value}: {}", error_string(r)));
         }
@@ -115,7 +191,7 @@ impl Handle {
     fn set_property(&self, name: &str, value: &str) -> Result<(), String> {
         let (n, v) = (cstr(name), cstr(value));
         // SAFETY: as above.
-        let r = unsafe { mpv_set_property_string(self.0, n.as_ptr(), v.as_ptr()) };
+        let r = unsafe { (loaded().set_property_string)(self.0, n.as_ptr(), v.as_ptr()) };
         if r < 0 {
             return Err(format!("mpv property {name}={value}: {}", error_string(r)));
         }
@@ -127,7 +203,7 @@ impl Handle {
         let mut ptrs: Vec<*const c_char> = owned.iter().map(|a| a.as_ptr()).collect();
         ptrs.push(std::ptr::null());
         // SAFETY: a NULL-terminated array of valid C strings that outlive the call.
-        let r = unsafe { mpv_command(self.0, ptrs.as_ptr()) };
+        let r = unsafe { (loaded().command)(self.0, ptrs.as_ptr()) };
         if r < 0 {
             return Err(format!("mpv {}: {}", args.first().unwrap_or(&""), error_string(r)));
         }
@@ -137,7 +213,7 @@ impl Handle {
     fn observe(&self, id: u64, name: &str, format: c_int) {
         let n = cstr(name);
         // SAFETY: valid handle and name.
-        unsafe { mpv_observe_property(self.0, id, n.as_ptr(), format) };
+        unsafe { (loaded().observe_property)(self.0, id, n.as_ptr(), format) };
     }
 }
 
@@ -228,8 +304,9 @@ const OBS_PAUSE: u64 = 3;
 
 impl Player {
     pub fn new(opts: &Options) -> Result<Self, String> {
+        let api = api()?;
         // SAFETY: plain constructor; NULL means out of memory or a bad locale.
-        let raw = unsafe { mpv_create() };
+        let raw = unsafe { (api.create)() };
         if raw.is_null() {
             return Err("couldn't start mpv".into());
         }
@@ -268,7 +345,7 @@ impl Player {
             }
         }
         // SAFETY: valid, not yet initialized handle.
-        let r = unsafe { mpv_initialize(handle.0) };
+        let r = unsafe { (api.initialize)(handle.0) };
         if r < 0 {
             return Err(format!("couldn't start mpv: {}", error_string(r)));
         }
@@ -329,10 +406,11 @@ impl Drop for Player {
 
 fn event_loop(shared: Arc<Shared>) {
     let h = shared.handle.0;
+    let wait_event = loaded().wait_event;
     loop {
         // SAFETY: the handle lives as long as `shared`; the event is valid
         // until the next wait_event on this thread.
-        let ev = unsafe { &*mpv_wait_event(h, -1.0) };
+        let ev = unsafe { &*wait_event(h, -1.0) };
         if ev.event_id != EVENT_PROPERTY_CHANGE {
             log::debug!("mpv event {}", ev.event_id);
         }

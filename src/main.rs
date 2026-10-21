@@ -15,6 +15,7 @@ use cosmic::iced::Size;
 pub const APP_ID: &str = "io.github.NotTimm.NebulaPlayer";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    platform::init_x11_threads();
     env_logger::init();
 
     // A video file given on the command line (or by "Open With") plays.

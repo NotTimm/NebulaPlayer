@@ -119,3 +119,26 @@ pub fn fallback_icon_theme() -> Option<&'static str> {
 pub fn fallback_icon_theme() -> Option<&'static str> {
     None
 }
+
+/// mpv draws its window from its own threads while the app draws its own.
+/// On X11 that's only safe once Xlib has been told to expect threads,
+/// before any connection is opened (mpv's docs ask apps that host it to do
+/// this); without it, starting a video as the app opens could crash.
+#[cfg(target_os = "linux")]
+pub fn init_x11_threads() {
+    if std::env::var_os("DISPLAY").is_none() {
+        return;
+    }
+    // SAFETY: XInitThreads takes no arguments and is called first thing,
+    // before any other thread or Xlib call exists. The library stays loaded.
+    unsafe {
+        let Ok(lib) = libloading::Library::new("libX11.so.6") else { return };
+        if let Ok(init) = lib.get::<unsafe extern "C" fn() -> std::ffi::c_int>(b"XInitThreads\0") {
+            init();
+        }
+        std::mem::forget(lib);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn init_x11_threads() {}
