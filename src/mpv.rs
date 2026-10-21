@@ -433,6 +433,18 @@ fn options(opts: &Options) -> Vec<(&'static str, String, bool)> {
     ]
 }
 
+/// Checks that mpv can be found and started, without opening a window:
+/// libmpv loads, or the mpv program answers `--version`. For packaging
+/// tests (`nebula-player --check-mpv`).
+pub fn check() -> Result<String, String> {
+    #[cfg(unix)]
+    if use_ipc() {
+        return ipc::check();
+    }
+    api()?;
+    Ok(api_version().unwrap_or_default())
+}
+
 /// Whether mpv runs as its own program (macOS, or `NEBULA_MPV=ipc`).
 fn use_ipc() -> bool {
     cfg!(target_os = "macos") || std::env::var("NEBULA_MPV").is_ok_and(|v| v == "ipc")
@@ -668,6 +680,19 @@ mod ipc {
             ["/opt/homebrew/bin/mpv", "/usr/local/bin/mpv"].into_iter().map(PathBuf::from),
         );
         candidates.into_iter().find(|p| p.is_file()).unwrap_or_else(|| PathBuf::from("mpv"))
+    }
+
+    pub(super) fn check() -> Result<String, String> {
+        let bin = binary();
+        let out = Command::new(&bin)
+            .arg("--version")
+            .output()
+            .map_err(|e| format!("couldn't run {}: {e}", bin.display()))?;
+        let first = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or_default().to_string();
+        if !out.status.success() || first.is_empty() {
+            return Err(format!("{} --version failed ({})", bin.display(), out.status));
+        }
+        Ok(format!("{first} ({})", bin.display()))
     }
 
     pub(super) fn start(opts: &Options) -> Result<Arc<Shared>, String> {

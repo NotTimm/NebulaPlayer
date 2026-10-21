@@ -1,0 +1,5 @@
+# Windows: link the C runtime statically, so nebula-player.exe runs on a
+# clean Windows without the Visual C++ Redistributable (VCRUNTIME140.dll).
+# libmpv-2.dll is a MinGW build and needs only what Windows 10+ ships.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

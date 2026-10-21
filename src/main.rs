@@ -18,8 +18,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     platform::init_x11_threads();
     env_logger::init();
 
+    let arg = std::env::args_os().nth(1);
+    match arg.as_ref().and_then(|a| a.to_str()) {
+        Some("--version") => {
+            println!("nebula-player {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        // Packaging tests: is mpv where this build expects it?
+        Some("--check-mpv") => {
+            return match mpv::check() {
+                Ok(found) => {
+                    println!("mpv: {found}");
+                    Ok(())
+                }
+                Err(e) => Err(e.into()),
+            };
+        }
+        _ => {}
+    }
     // A video file given on the command line (or by "Open With") plays.
-    let path = std::env::args_os().nth(1).map(std::path::PathBuf::from);
+    let path = arg.map(std::path::PathBuf::from);
 
     // Posters and backdrops are cache: keep them under 1 GB.
     images::prune(1024 * 1024 * 1024);

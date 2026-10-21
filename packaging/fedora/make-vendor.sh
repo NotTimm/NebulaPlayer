@@ -5,6 +5,7 @@
 # crates.io at vendor/, so the git sources' entries ride along in
 # cargo-vendor-git.toml for %prep to append to .cargo/config.toml.
 set -euo pipefail
+# shellcheck source=packaging/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../common.sh"
 need cargo
 

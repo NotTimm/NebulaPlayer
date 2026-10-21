@@ -1,0 +1,155 @@
+# Flatpak manifest for the .flatpak bundle attached to GitHub releases.
+# (Not a Flathub submission: that's the owner's call, see CLAUDE.md.)
+#
+# Builds from the local checkout (`type: dir`) fully offline: every crate,
+# including the libcosmic fork's git dependencies, comes from
+# cargo-sources.json, which packaging/gen-cargo-sources.sh generates from
+# Cargo.lock (it's not committed; regenerate after changing Cargo.lock).
+#
+# libmpv is built here with what it needs (ffmpeg, libass, libplacebo,
+# Lua for mpv's on-screen controller), following the recipe of Flathub's
+# Celluloid (io.github.celluloid_player.Celluloid), on the GNOME runtime
+# it uses. The Lua module comes from flathub/shared-modules.
+app-id: io.github.NotTimm.NebulaPlayer
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: nebula-player
+
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  # GPU decoding and rendering.
+  - --device=dri
+  - --socket=pulseaudio
+  - --filesystem=xdg-run/pipewire-0:ro
+  # Jellyfin servers, and posters.
+  - --share=network
+  # Local video folders listed on the Local Files page, and removable
+  # drives; the file portal handles anything else.
+  - --filesystem=xdg-videos:ro
+  - --filesystem=xdg-download:ro
+  - --filesystem=/media:ro
+  - --filesystem=/run/media:ro
+  # The desktop's look under the "System" colours setting.
+  - --talk-name=com.system76.CosmicSettingsDaemon
+  # mpv expects a C locale for numbers.
+  - --env=LC_NUMERIC=C
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /share/man
+  - '*.la'
+  - '*.a'
+
+modules:
+  - name: libmpv
+    buildsystem: meson
+    config-opts:
+      - -Dlibmpv=true
+      - -Dcplayer=false
+      - -Dbuild-date=false
+      - -Dalsa=disabled
+      - -Dlua=enabled
+      - -Djavascript=disabled
+      - -Drubberband=disabled
+      - -Dmanpage-build=disabled
+    cleanup:
+      - /share/applications
+      - /share/bash-completion
+      - /share/doc
+      - /share/icons
+      - /share/zsh
+    sources:
+      - type: archive
+        url: https://github.com/mpv-player/mpv/archive/v0.41.0.tar.gz
+        sha256: ee21092a5ee427353392360929dc64645c54479aefdb5babc5cfbb5fad626209
+
+    modules:
+      - flatpak/lua5.1/lua-5.1.5.json
+
+      - name: ffmpeg
+        cleanup:
+          - /share/ffmpeg/examples
+        config-opts:
+          - --enable-shared
+          - --disable-static
+          - --enable-gnutls
+          - --enable-gpl
+          - --disable-doc
+          - --disable-programs
+          - --disable-encoders
+          - --disable-muxers
+          # Screenshots.
+          - --enable-encoder=png
+          - --enable-encoder=libjxl
+          - --enable-libv4l2
+          - --enable-libdav1d
+          - --enable-libjxl
+        sources:
+          - type: archive
+            url: https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+            sha256: 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
+
+      - name: libass
+        config-opts:
+          - --disable-static
+        sources:
+          - type: archive
+            url: https://github.com/libass/libass/releases/download/0.17.5/libass-0.17.5.tar.xz
+            sha256: 2dca25c0e0c837ddf00b52011b3f82cac1e4ddd3ad018227806b0c2288864acc
+
+      - name: uchardet
+        buildsystem: cmake-ninja
+        config-opts:
+          - -DCMAKE_BUILD_TYPE=Release
+          - -DBUILD_STATIC=0
+          - -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+        cleanup:
+          - /bin
+          - /lib/cmake
+        sources:
+          - type: archive
+            url: https://www.freedesktop.org/software/uchardet/releases/uchardet-0.0.8.tar.xz
+            sha256: e97a60cfc00a1c147a674b097bb1422abd9fa78a2d9ce3f3fdcc2e78a34ac5f0
+
+      - name: libplacebo
+        buildsystem: meson
+        sources:
+          - type: git
+            url: https://github.com/haasn/libplacebo.git
+            tag: v7.360.1
+            commit: cee9b076f2c63104ccfd497fa79c39a867293ec4
+
+  - name: nebula-player
+    buildsystem: simple
+    build-options:
+      env:
+        CARGO_HOME: /run/build/nebula-player/cargo
+        CARGO_NET_OFFLINE: 'true'
+    build-commands:
+      - cargo --offline fetch --manifest-path Cargo.toml --verbose
+      - cargo --offline build --release --verbose
+      - install -Dm0755 target/release/nebula-player /app/bin/nebula-player
+      - install -Dm0644 res/io.github.NotTimm.NebulaPlayer.desktop
+        /app/share/applications/io.github.NotTimm.NebulaPlayer.desktop
+      - for icon in res/icons/hicolor/*/apps/io.github.NotTimm.NebulaPlayer.*; do
+          install -Dm0644 "$icon" "/app/share/icons/hicolor/${icon#res/icons/hicolor/}";
+        done
+      - install -Dm0644 res/io.github.NotTimm.NebulaPlayer.metainfo.xml
+        /app/share/metainfo/io.github.NotTimm.NebulaPlayer.metainfo.xml
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - target
+          - dist
+          - .flatpak-builder
+      - cargo-sources.json

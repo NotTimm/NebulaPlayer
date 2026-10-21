@@ -15,10 +15,10 @@ trap 'rm -rf "$WORK"' EXIT
 
 # libmpv from the build machine (CI: Ubuntu 24.04's libmpv2).
 LIBMPV="${LIBMPV:-$(ldconfig -p | awk '/libmpv\.so\.2 / {print $NF; exit}')}"
-[ -n "$LIBMPV" ] && [ -f "$LIBMPV" ] || {
+if [ -z "$LIBMPV" ] || [ ! -f "$LIBMPV" ]; then
     echo "error: libmpv.so.2 not found (sudo apt install libmpv2, or set LIBMPV)" >&2
     exit 1
-}
+fi
 
 # appimagetool isn't packaged by most distros; fetch it on demand and cache
 # it next to the dist output.
@@ -55,13 +55,15 @@ bundle() {
     case "$(basename "$lib")" in
         libc.so.*|libm.so.*|libdl.so.*|libpthread.so.*|librt.so.*|ld-linux*|libresolv.so.*|libutil.so.*) return ;;
         libgcc_s.so.*|libstdc++.so.*) return ;;
-        libGL*|libEGL*|libGLX*|libGLdispatch*|libOpenGL*|libgbm*|libdrm*|libvulkan*) return ;;
+        libGL*|libEGL*|libOpenGL*|libgbm*|libdrm*|libvulkan*) return ;;
         libX11*|libXext*|libXrandr*|libXss*|libXinerama*|libXpresent*|libXfixes*|libXrender*|libXau*|libXdmcp*|libXv*|libxcb*|libwayland*|libxkbcommon*) return ;;
         libva*|libvdpau*) return ;;
         libasound*|libpulse*|libpipewire*|libjack*) return ;;
         libfontconfig*|libfreetype*|libexpat*|libz.so.*|libdbus*|libsystemd*|libudev*) return ;;
     esac
-    [ -f "$lib" ] && cp -Ln "$lib" "$APPDIR/usr/lib/" 2>/dev/null || true
+    if [ -f "$lib" ]; then
+        cp -Ln "$lib" "$APPDIR/usr/lib/"
+    fi
 }
 while read -r lib; do bundle "$lib"; done < <(ldd "$APPDIR/usr/bin/$APP_NAME" | awk '/=> \// {print $3}')
 cp -L "$LIBMPV" "$APPDIR/usr/lib/libmpv.so.2"

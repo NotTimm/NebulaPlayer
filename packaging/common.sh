@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Shared helpers for the packaging scripts. Source, don't execute.
+# shellcheck disable=SC2034  # the variables are for the scripts that source this
 set -euo pipefail
 
 APP_ID="io.github.NotTimm.NebulaPlayer"
