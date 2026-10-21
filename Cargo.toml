@@ -1,0 +1,45 @@
+[package]
+name = "nebula-player"
+version = "0.1.0-alpha.1"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Nebula Player: a fast, native Jellyfin and local video player built on libcosmic and mpv"
+repository = "https://github.com/NotTimm/NebulaPlayer"
+
+[dependencies]
+env_logger = "0.11"
+log = "0.4"
+tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "sync", "time"] }
+url = "2.5"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+
+# The owner's fork of pop-os/libcosmic, the same one Nebula Reader uses and
+# pinned to the same commit (its patches are listed in NebulaReader's
+# Cargo.toml). Kept in sync with upstream by merging; see docs/DEVELOPING.md.
+[dependencies.libcosmic]
+git = "https://github.com/NotTimm/libcosmic.git"
+rev = "cd86f68873413a5340345a17fe8517f51a134d5d"
+default-features = false
+features = ["wgpu", "winit", "tokio"]
+
+# Linux gets Wayland, COSMIC's settings daemon and XDG portal dialogs;
+# Windows/macOS use plain winit windows and native (rfd) file dialogs.
+# Same git/rev as above, so cargo merges these into one libcosmic.
+[target.'cfg(target_os = "linux")'.dependencies]
+libcosmic = { git = "https://github.com/NotTimm/libcosmic.git", rev = "cd86f68873413a5340345a17fe8517f51a134d5d", default-features = false, features = ["dbus-config", "wayland", "xdg-portal"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+libcosmic = { git = "https://github.com/NotTimm/libcosmic.git", rev = "cd86f68873413a5340345a17fe8517f51a134d5d", default-features = false, features = ["rfd"] }
+
+[profile.release]
+lto = true
+
+# Poster and backdrop decoding is far slower unoptimised.
+[profile.dev.package]
+zune-jpeg.opt-level = 3
+png.opt-level = 3
+image-webp.opt-level = 3
+image.opt-level = 3

@@ -1,0 +1,91 @@
+# Developing Nebula Player
+
+## Building
+
+Linux build dependencies: Rust (stable), `pkg-config` and the development
+packages for libmpv, libxkbcommon, Wayland and OpenSSL.
+
+```fish
+# Fedora (mpv is in Fedora itself)
+sudo dnf install mpv-libs-devel libxkbcommon-devel wayland-devel openssl-devel pkgconf-pkg-config
+# Ubuntu/Debian
+sudo apt install libmpv-dev libxkbcommon-dev libwayland-dev libssl-dev pkg-config
+```
+
+```fish
+cargo build --release
+./target/release/nebula-player              # the app
+./target/release/nebula-player movie.mkv    # play a file straight away
+```
+
+On a laptop, build gently: `nice -n 19 cargo build -j 4`.
+
+Windows: download an mpv dev package (`mpv-dev-x86_64-*.7z` from
+https://github.com/shinchiro/mpv-winbuild-cmake/releases), make an MSVC
+import library from mpv's `mpv.def`
+(`lib /def:mpv.def /name:libmpv-2.dll /out:mpv.lib /machine:x64`), and
+point the build at it:
+
+```powershell
+$env:MPV_LIB_DIR = "C:\path\to\mpv-dev"
+cargo build --release
+```
+
+Ship `libmpv-2.dll` next to `nebula-player.exe`.
+
+## Testing without a server
+
+`tools/mock-jellyfin.py` is a fake Jellyfin server with a couple of
+movies and a show. It serves generated images and, when `ffmpeg` is
+installed, a short test video for every item.
+
+```fish
+python3 tools/mock-jellyfin.py 8096
+# then connect the app to localhost:8096, user "demo", any password
+```
+
+## How it's put together
+
+- `src/mpv.rs`: a small binding to libmpv's client API (only the calls
+  needed, present since libmpv 1.x) and the `Player`. mpv owns its own
+  window and on-screen controller; an event thread keeps a `State`
+  that the UI polls twice a second.
+- `src/jellyfin.rs`: the API client (sign-in, home sections, browsing,
+  images, PlaybackInfo, playback reports).
+- `src/images.rs`: images are fetched at display size, cached on disk
+  (keyed by the server's image tag) and decoded off the UI thread.
+- `src/app.rs`: state, messages and navigation. The pages live in
+  `src/app/` (`home`, `library`, `details`, `search`, `local`, `signin`,
+  `settings_view`, with shared cards in `widgets`).
+- `src/theme.rs`: the Jellyfin colours and gradients.
+
+### Playback and progress
+
+`Message::Play` asks the server for PlaybackInfo, then loads
+`/Videos/{id}/stream?static=true` into mpv, sending the token in an
+`X-Emby-Token` header. That header has no commas, which matters because
+mpv splits its header list on commas. Nothing is transcoded. The app
+reports `/Sessions/Playing` once the file loads, `/Progress` every 10 s
+and on pause, and `/Stopped` with the last position. Jellyfin marks an
+item watched past 90 %. At the end of an episode the next one loads into
+the same mpv window.
+
+### Embedding (later)
+
+Upstream libmpv's render API only does OpenGL and software rendering,
+while libcosmic draws with wgpu. So for now mpv keeps its own window. The
+planned order is `--wid` embedding on Windows/X11, then a Wayland
+subsurface fed by mpv's OpenGL output through dmabuf.
+
+## The libcosmic fork
+
+Nebula Player uses the owner's fork `NotTimm/libcosmic` at the same
+commit as Nebula Reader. When Nebula Reader moves its pin after syncing
+with upstream, move this one to match.
+
+## Releases
+
+Versions stay pre-release (`0.x.y-alpha.N`, then `-beta.N`) until the
+owner says otherwise, and GitHub releases are marked as pre-releases.
+Every release gets user-facing notes in
+`packaging/release-notes/<version>.md`.
