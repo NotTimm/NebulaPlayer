@@ -746,30 +746,60 @@ impl SortBy {
     }
 }
 
-/// One page of a library or folder's contents. Movie and show libraries
-/// list every movie/show inside (however the folders are laid out);
-/// others list the folder's direct children.
-pub async fn library_page(
-    account: &Account,
-    parent: &Item,
-    sort: SortBy,
-    start: usize,
-    limit: usize,
-) -> Result<(Vec<Item>, usize), String> {
-    let kinds = match parent.collection_type.as_deref() {
-        Some("movies") => Some("Movie"),
-        Some("tvshows") => Some("Series"),
-        Some("boxsets") => Some("BoxSet"),
-        Some("musicvideos") => Some("MusicVideo"),
-        _ => None,
-    };
-    let mut params = format!("parentId={}&startIndex={start}&limit={limit}&{}", parent.id, sort.params());
-    match kinds {
-        Some(k) => params.push_str(&format!("&includeItemTypes={k}&recursive=true")),
-        None => params.push_str("&excludeItemTypes=Audio,Book,Photo,MusicAlbum"),
+/// What a library page lists: a library or folder, its order, and an
+/// optional search within it.
+#[derive(Clone, Debug)]
+pub struct LibraryQuery {
+    pub parent: Item,
+    pub sort: SortBy,
+    pub search: String,
+}
+
+impl LibraryQuery {
+    /// Movie and show libraries list every movie/show inside (however the
+    /// folders are laid out); others list the folder's direct children,
+    /// or anything inside when searching.
+    fn params(&self) -> String {
+        let kinds = match self.parent.collection_type.as_deref() {
+            Some("movies") => Some("Movie"),
+            Some("tvshows") => Some("Series"),
+            Some("boxsets") => Some("BoxSet"),
+            Some("musicvideos") => Some("MusicVideo"),
+            _ => None,
+        };
+        let mut params = format!("parentId={}&{}", self.parent.id, self.sort.params());
+        match kinds {
+            Some(k) => params.push_str(&format!("&includeItemTypes={k}&recursive=true")),
+            None => params.push_str("&excludeItemTypes=Audio,Book,Photo,MusicAlbum"),
+        }
+        let search = self.search.trim();
+        if !search.is_empty() {
+            let term: String = url::form_urlencoded::byte_serialize(search.as_bytes()).collect();
+            params.push_str(&format!("&searchTerm={term}"));
+            if kinds.is_none() {
+                params.push_str("&recursive=true");
+            }
+        }
+        params
     }
+}
+
+/// One page of a library: its items from `start`, and how many there are
+/// in all.
+pub async fn library_page(account: &Account, q: &LibraryQuery, start: usize, limit: usize) -> Result<(Vec<Item>, usize), String> {
+    let params = format!("{}&startIndex={start}&limit={limit}", q.params());
     let page: ItemsPage = account.items_route("", &params).get(account).await?;
     Ok((page.items, page.total_record_count))
+}
+
+/// Where the first item whose name starts at `letter` or later is, in a
+/// library sorted by name: the number sorted before it. Jellyfin compares
+/// sort names, which are lower case and without a leading "The".
+pub async fn library_position(account: &Account, q: &LibraryQuery, letter: char) -> Result<usize, String> {
+    let before = letter.to_lowercase().to_string();
+    let params = format!("{}&nameLessThan={before}&limit=0", q.params());
+    let page: ItemsPage = account.items_route("", &params).get(account).await?;
+    Ok(page.total_record_count)
 }
 
 pub async fn seasons(account: &Account, series_id: &str) -> Result<Vec<Item>, String> {

@@ -17,7 +17,7 @@ use cosmic::widget::{self, icon, image::Handle, nav_bar};
 use cosmic::{executor, Application, ApplicationExt, Element};
 
 use crate::images::{self, Key};
-use crate::jellyfin::{self, Account, Accounts, ImageRef, Item, Report, SortBy};
+use crate::jellyfin::{self, Account, Accounts, ImageRef, Item, Report};
 use crate::mpv;
 use crate::settings::{AccentChoice, Settings, SkipMode, ThemeChoice};
 use cosmic::cosmic_theme::palette::Srgb;
@@ -31,6 +31,7 @@ mod settings_view;
 mod signin;
 mod widgets;
 
+pub use library::{LibraryMsg, LibraryPage};
 pub use local::LocalFile;
 
 /// Image widths fetched for each use (about twice the size shown, for
@@ -83,14 +84,6 @@ pub struct HomeData {
     next_up: Vec<Item>,
     latest: Vec<(Item, Vec<Item>)>,
     featured: Vec<Item>,
-}
-
-pub struct LibraryPage {
-    pub parent: Item,
-    pub items: Vec<Item>,
-    pub total: usize,
-    pub sort: SortBy,
-    pub loading: bool,
 }
 
 pub struct DetailsPage {
@@ -213,9 +206,7 @@ pub enum Message {
     FeaturedPick(usize),
     ImageLoaded(Key, Result<images::Picture, String>),
     Open(Item),
-    LibraryLoaded(String, usize, Result<(Vec<Item>, usize), String>),
-    LibraryMore,
-    LibrarySort(usize),
+    Library(LibraryMsg),
     DetailsLoaded(String, Result<Box<DetailsData>, String>),
     SeasonPick(String),
     EpisodesLoaded(String, Result<Vec<Item>, String>),
@@ -223,7 +214,8 @@ pub enum Message {
     ToggleFavorite(Item),
     UserDataSaved(Result<(), String>),
     Back,
-    Scrolled(f32),
+    /// The page scrolled: how far down it is (0–1) and in pixels.
+    Scrolled(f32, f32),
     WindowOpened,
     SearchInput(String),
     SearchSubmit,
@@ -372,7 +364,7 @@ impl App {
             (NavTarget::Home, Page::Home) => true,
             (NavTarget::Search, Page::Search) => true,
             (NavTarget::Local, Page::Local) => true,
-            (NavTarget::Library(lib), Page::Library(p)) => lib.id == p.parent.id,
+            (NavTarget::Library(lib), Page::Library(p)) => lib.id == p.query.parent.id,
             _ => false,
         };
         let found = self.nav.iter().find(|id| self.nav.data::<NavTarget>(*id).is_some_and(wanted));
@@ -443,30 +435,6 @@ impl App {
         cosmic::task::future(async move {
             let result = load_details(&account, &id, season).await.map(Box::new);
             Message::DetailsLoaded(id, result)
-        })
-    }
-
-    fn open_library(&mut self, parent: Item, from_nav: bool) -> Task<Message> {
-        let page = Page::Library(Box::new(LibraryPage {
-            parent: parent.clone(),
-            items: Vec::new(),
-            total: 0,
-            sort: SortBy::Name,
-            loading: true,
-        }));
-        if from_nav {
-            self.go(page);
-        } else {
-            self.push(page);
-        }
-        self.load_library_page(parent, SortBy::Name, 0)
-    }
-
-    fn load_library_page(&self, parent: Item, sort: SortBy, start: usize) -> Task<Message> {
-        let Some(account) = self.account.clone() else { return Task::none() };
-        cosmic::task::future(async move {
-            let result = jellyfin::library_page(&account, &parent, sort, start, PAGE_SIZE).await;
-            Message::LibraryLoaded(parent.id, start, result)
         })
     }
 
@@ -1057,11 +1025,10 @@ impl App {
                     });
                 }
             }
-            Message::Scrolled(y) => {
+            Message::Scrolled(y, pixels) => {
                 self.scroll_y = y;
-                // Near the bottom of a library, its next page loads.
-                if y > 0.85 && matches!(self.page, Page::Library(_)) {
-                    return self.handle(Message::LibraryMore);
+                if let Page::Library(lib) = &mut self.page {
+                    lib.offset = pixels;
                 }
             }
             // ── Sign-in ──────────────────────────────────────────────────────
@@ -1239,44 +1206,7 @@ impl App {
                 }
             }
             Message::Open(item) => return self.open_item(item),
-            Message::LibraryLoaded(id, start, result) => {
-                let Page::Library(lib) = &mut self.page else { return Task::none() };
-                if lib.parent.id != id || lib.items.len() != start {
-                    return Task::none();
-                }
-                lib.loading = false;
-                match result {
-                    Ok((items, total)) => {
-                        let keys = Self::poster_keys(&items);
-                        lib.items.extend(items);
-                        lib.total = total;
-                        return self.fetch_images(keys);
-                    }
-                    Err(e) => self.error = Some(e),
-                }
-            }
-            Message::LibraryMore => {
-                if let Page::Library(lib) = &mut self.page {
-                    if !lib.loading && lib.items.len() < lib.total {
-                        lib.loading = true;
-                        let (parent, sort, start) = (lib.parent.clone(), lib.sort, lib.items.len());
-                        return self.load_library_page(parent, sort, start);
-                    }
-                }
-            }
-            Message::LibrarySort(i) => {
-                if let Page::Library(lib) = &mut self.page {
-                    let sort = SortBy::ALL.get(i).copied().unwrap_or_default();
-                    if sort != lib.sort {
-                        lib.sort = sort;
-                        lib.items.clear();
-                        lib.total = 0;
-                        lib.loading = true;
-                        let parent = lib.parent.clone();
-                        return self.load_library_page(parent, sort, 0);
-                    }
-                }
-            }
+            Message::Library(msg) => return self.update_library(msg),
             Message::DetailsLoaded(id, result) => {
                 let Page::Details(d) = &mut self.page else { return Task::none() };
                 if d.item.id != id {

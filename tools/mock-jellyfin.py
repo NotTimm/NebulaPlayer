@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A fake Jellyfin server for trying Nebula Player without a real one.
 
-    python3 tools/mock-jellyfin.py [port] [--legacy]     (default 8096)
+    python3 tools/mock-jellyfin.py [port] [--legacy] [--many N]   (default 8096)
 
 With --legacy it answers only the routes Jellyfin 10.8 had
 (/Users/{id}/Items...), like an old server; otherwise both those and the
@@ -12,7 +12,8 @@ approves itself after a few seconds). There are three movies and a show
 with two seasons; images are generated colour gradients. With ffmpeg
 installed every item streams a short test video, made once in the temp
 folder. Playback reports and watched/favourite changes are printed and
-kept in memory.
+kept in memory. --many N adds N more movies, for trying big libraries
+(paging, the A-Z bar, search).
 """
 
 import json
@@ -67,6 +68,32 @@ MOVIES = [
     movie(3, "Fast Native", 2022, 8.3, 125, ["Action", "Comedy"],
           "Two rival couriers race across a city that never sleeps, for a package neither should open."),
 ]
+
+def sort_name(name):
+    """Jellyfin's SortName: lower case, without a leading article."""
+    n = name.lower()
+    for article in ("the ", "a ", "an "):
+        if n.startswith(article):
+            return n[len(article):]
+    return n
+
+def filler_movies(n):
+    first = ["The", "", "A", "Last", "Red", "Silent", "Broken", "Golden", "Lost", "Midnight", "Iron", "Zero",
+             "Electric", "Hidden", "Northern", "Paper", "Quantum", "Velvet", "Wild", "Yellow", "Xenon", "Jade",
+             "Kings of", "Under", "Oath of", "1984", "300", "12"]
+    second = ["Harbor", "Engine", "Signal", "Garden", "Machine", "River", "Empire", "Dream", "Station", "Hours",
+              "Summer", "Protocol", "Frontier", "Mirror", "Kingdom", "Echo", "Voyage", "Shadow", "Orchard"]
+    out = []
+    for i in range(n):
+        name = " ".join(w for w in (first[i % len(first)], second[(i // len(first)) % len(second)]) if w)
+        if i >= len(first) * len(second):
+            name += f" {i // (len(first) * len(second)) + 1}"
+        out.append(movie(100 + i, name, 1970 + i % 55, 5 + (i % 40) / 10, 90 + i % 60, ["Drama"],
+                         f"Filler movie number {i}."))
+    return out
+
+if "--many" in sys.argv:
+    MOVIES += filler_movies(int(sys.argv[sys.argv.index("--many") + 1]))
 
 SERIES = {
     "Id": "series-1", "Name": "Orbiters", "Type": "Series", "IsFolder": True, "ParentId": "lib-shows",
@@ -292,16 +319,20 @@ class Handler(BaseHTTPRequestHandler):
             items = MOVIES[::-1] if parent == "lib-movies" else [SERIES] if parent == "lib-shows" else []
             return self.send([with_user_data(i) for i in items])
         if p == f"{user}/Items":
-            if "searchterm" in q:
+            if "searchterm" in q and "parentid" not in q:
                 term = q["searchterm"].lower()
                 return self.send(page([i for i in MOVIES + [SERIES] + EPISODES if term in i["Name"].lower()]))
             parent = q.get("parentid")
             if parent == "lib-movies":
-                items = sorted(MOVIES, key=lambda m: m["Name"])
+                items = sorted(MOVIES, key=lambda m: sort_name(m["Name"]))
             elif parent == "lib-shows":
                 items = [SERIES]
             else:
                 items = MOVIES + [SERIES]
+            if "searchterm" in q:
+                items = [i for i in items if q["searchterm"].lower() in i["Name"].lower()]
+            if "namelessthan" in q:
+                items = [i for i in items if sort_name(i["Name"]) < q["namelessthan"]]
             start, limit = int(q.get("startindex", 0)), int(q.get("limit", 100))
             out = page(items[start:start + limit])
             out["TotalRecordCount"] = len(items)
@@ -448,7 +479,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    args = [a for i, a in enumerate(sys.argv[1:], 1) if not a.startswith("--") and sys.argv[i - 1] != "--many"]
     port = int(args[0]) if args else 8096
     kind = "Jellyfin 10.8 routes only" if LEGACY_ONLY else "10.9+ and 10.8 routes"
     print(f"Mock Jellyfin on http://localhost:{port} ({kind}; user: demo, any password)")

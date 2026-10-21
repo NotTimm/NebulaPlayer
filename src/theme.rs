@@ -217,3 +217,30 @@ pub fn card_button() -> cosmic::theme::Button {
         pressed: Box::new(|_, t| style(t, 0.14)),
     }
 }
+
+/// A letter in a library's A–Z bar: plain, or the accent when it's the
+/// letter at the top of the screen.
+pub fn letter_button(current: bool) -> cosmic::theme::Button {
+    fn style(theme: &cosmic::Theme, current: bool, highlight: f32) -> widget::button::Style {
+        let c = theme.cosmic();
+        let on_bg: Color = c.on_bg_color().into();
+        let text = if current { c.accent_text_color().into() } else { Color { a: 0.75, ..on_bg } };
+        widget::button::Style {
+            background: (highlight > 0.0).then(|| Background::Color(Color { a: highlight, ..on_bg })),
+            border_radius: 4.0.into(),
+            text_color: Some(text),
+            icon_color: Some(text),
+            ..widget::button::Style::new()
+        }
+    }
+    let make = move |highlight: f32| -> Box<dyn Fn(&cosmic::Theme) -> widget::button::Style> {
+        Box::new(move |t| style(t, current, highlight))
+    };
+    let (active, hovered, pressed, disabled) = (make(0.0), make(0.1), make(0.16), make(0.0));
+    cosmic::theme::Button::Custom {
+        active: Box::new(move |_, t| active(t)),
+        disabled: Box::new(move |t| disabled(t)),
+        hovered: Box::new(move |_, t| hovered(t)),
+        pressed: Box::new(move |_, t| pressed(t)),
+    }
+}

@@ -11,6 +11,10 @@ use crate::jellyfin::{Item, Person};
 pub const POSTER: (f32, f32) = (150.0, 225.0);
 pub const LANDSCAPE: (f32, f32) = (272.0, 153.0);
 pub const PERSON: (f32, f32) = (110.0, 150.0);
+/// A poster card's title and subtitle, under its picture.
+pub const CARD_TEXT_H: f32 = 46.0;
+/// Around a card, inside its highlight.
+pub const CARD_PADDING: f32 = 6.0;
 
 /// Shortens `s` to at most `max` characters, with an ellipsis.
 pub fn truncate(s: &str, max: usize) -> String {
@@ -114,7 +118,7 @@ fn overlaid<'a>(pic: Element<'a, Message>, item: &Item, w: f32, h: f32) -> Eleme
 fn clickable<'a>(content: impl Into<Element<'a, Message>>, msg: Message) -> Element<'a, Message> {
     widget::button::custom(content)
         .class(crate::theme::card_button())
-        .padding(6)
+        .padding(CARD_PADDING)
         .on_press(msg)
         .into()
 }
@@ -143,20 +147,35 @@ pub fn subtitle(item: &Item) -> String {
 impl App {
     /// A portrait card (movies, shows, seasons); opens its page.
     pub fn poster_card<'a>(&'a self, item: &'a Item) -> Element<'a, Message> {
-        let (w, h) = POSTER;
+        self.poster_card_sized(item, POSTER.0, POSTER.1)
+    }
+
+    /// A poster card with its picture `w` × `h`. Its title stays on one
+    /// line, so cards side by side are all the same height.
+    pub fn poster_card_sized<'a>(&'a self, item: &'a Item, w: f32, h: f32) -> Element<'a, Message> {
         let key = item.poster().map(|img| Key { img, width: POSTER_W });
         let pic = picture(key.as_ref().and_then(|k| self.image(k)), w, h, icon_for(item));
         let title = match item.kind.as_str() {
             "Episode" => item.series_name.clone().unwrap_or_else(|| item.name.clone()),
             _ => item.name.clone(),
         };
+        let chars = (w / 6.8) as usize;
         let card = widget::column::with_capacity(3)
             .push(overlaid(pic, item, w, h))
-            .push(widget::text::body(truncate(&title, 22)))
-            .push(widget::text::caption(subtitle(item)))
+            .push(widget::text::body(truncate(&title, chars)))
+            .push(widget::text::caption(truncate(&subtitle(item), chars)))
             .spacing(4)
-            .width(Length::Fixed(w));
+            .width(Length::Fixed(w))
+            .height(Length::Fixed(h + CARD_TEXT_H));
         clickable(card, Message::Open(item.clone()))
+    }
+
+    /// A poster card's place while its item loads.
+    pub fn poster_placeholder<'a>(w: f32, h: f32) -> Element<'a, Message> {
+        widget::container(picture(None, w, h, "image-loading-symbolic"))
+            .padding(CARD_PADDING)
+            .height(Length::Fixed(h + CARD_TEXT_H + 2.0 * CARD_PADDING))
+            .into()
     }
 
     /// A 16:9 card. Continue Watching and Next Up cards play straight
@@ -216,7 +235,7 @@ pub fn page_scroll<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, 
     widget::scrollable(content)
         .id(super::page_scroll_id())
         .height(Length::Fill)
-        .on_scroll(|v| Message::Scrolled(v.relative_offset().y))
+        .on_scroll(|v| Message::Scrolled(v.relative_offset().y, v.absolute_offset().y))
         .into()
 }
 
