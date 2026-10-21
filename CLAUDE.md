@@ -22,9 +22,12 @@ no book support here, and no shared crates for now (code is copied).
   release unless asked. Every release gets user-facing notes in
   `packaging/release-notes/<version>.md`; give the owner the same notes
   in chat.
-- Claude's GitHub token may lack the `workflow` scope: if a push touching
-  `.github/workflows/` is refused, park the file in `packaging/pending/`
-  and ask the owner to paste it in on github.com.
+- On the owner's laptop `origin` is SSH with the owner's key, which can
+  push `.github/workflows/` changes. Elsewhere Claude's GitHub token may
+  lack the `workflow` scope: if such a push is refused, park the file in
+  `packaging/pending/` and ask the owner to paste it in on github.com.
+  Don't push to `main` while a publish run is going: pushes cancel the
+  running build.
 - The owner's editor is Neovim (use `nvim` in instructions); their Linux
   shell is fish (`set -x VAR value`).
 - Flathub's AI policy applies here as for Nebula Reader: Claude doesn't
@@ -56,10 +59,9 @@ Last updated 2026-10-21 (evening session).
 - COPR: project `timbo-slice/nebula-player` (owner's account), package
   `nebula-player` from SCM + make srpm, chroots Fedora 43/44/45/rawhide
   x86_64, no auto-rebuild; first build 11184764 (alpha.1) started by
-  hand. **Pending paste:** `packaging/pending/build.yml` adds the
-  workflow's `copr` job; once it's in, delete the pending copy. The job (secret COPR_CONFIG, project from the
-  COPR_PROJECT variable, default timbo-slice/nebula-player) starts it
-  after each publish. Plan (owner, "this weekend"): one
+  hand. The workflow's `copr` job (secret COPR_CONFIG, project from
+  the COPR_PROJECT variable, default timbo-slice/nebula-player) starts it
+  after each publish; until the owner sets COPR_CONFIG it only warns. Plan (owner, "this weekend"): one
   `timbo-slice/nebula-apps` project holding both nebula-player and
   nebula-reader: here that's just setting COPR_PROJECT; the Reader's
   workflow `copr` job needs its project name changed (a workflow paste).

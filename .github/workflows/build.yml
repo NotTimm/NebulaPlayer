@@ -17,6 +17,12 @@
 #   published with their `<name>.minisig`. Without the secrets the builds
 #   are unsigned, with a warning.
 #
+# - After publishing, the `copr` job starts the COPR build of the new
+#   release (secret COPR_CONFIG: the config block from
+#   copr.fedorainfracloud.org/api, which expires every 180 days). The
+#   project is the COPR_PROJECT repository variable, by default
+#   timbo-slice/nebula-player. Without the secret it only warns.
+#
 # Besides those, only the default GITHUB_TOKEN is needed (contents:
 # write, for the release).
 name: Build
@@ -585,3 +591,24 @@ jobs:
               --notes-file "packaging/release-notes/$VERSION.md" \
               --generate-notes
           fi
+
+  copr:
+    name: Build on COPR
+    needs: [version, release]
+    runs-on: ubuntu-24.04
+    env:
+      COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
+      COPR_PROJECT: ${{ vars.COPR_PROJECT || 'timbo-slice/nebula-player' }}
+    steps:
+      - name: Skip (no COPR_CONFIG secret)
+        if: env.COPR_CONFIG == ''
+        run: echo "::warning::COPR_CONFIG isn't set; start the COPR build by hand."
+
+      - name: Start the build
+        if: env.COPR_CONFIG != ''
+        run: |
+          pipx install copr-cli
+          mkdir -p ~/.config
+          (umask 077; printf '%s\n' "$COPR_CONFIG" > ~/.config/copr)
+          trap 'rm -f ~/.config/copr' EXIT
+          copr-cli build-package "$COPR_PROJECT" --name nebula-player --nowait
