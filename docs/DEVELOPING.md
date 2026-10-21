@@ -132,14 +132,23 @@ macros. The `fedora` job builds it the way COPR does, on every push. Keep
 its `Version` in step with Cargo.toml, `~` for Cargo's `-`; the workflow
 checks.
 
-To set up COPR (no CI job starts it yet):
+COPR project: `timbo-slice/nebula-player` (chroots Fedora 43, 44, 45 and
+rawhide, x86_64). Install with `sudo dnf copr enable
+timbo-slice/nebula-player` then `sudo dnf install nebula-player`. Its
+package `nebula-player` builds from SCM (clone URL
+`https://github.com/NotTimm/NebulaPlayer`, spec
+`packaging/fedora/nebula-player.spec`, build method **make srpm**, which
+runs `.copr/Makefile` to download the release's tarballs), with
+auto-rebuild off: a build only works once the release exists.
 
-1. Create a project on copr.fedorainfracloud.org (e.g. `nebula-player`)
-   with the Fedora chroots you want.
-2. Add a package with source type **SCM**: clone URL
-   `https://github.com/NotTimm/NebulaPlayer`, build method **make srpm**
-   (it uses `.copr/Makefile`, which downloads the release's tarballs).
-3. Once a release is published, start a build of that package.
+The workflow's `copr` job starts that build after each publish, using the
+`COPR_CONFIG` secret (the whole config block from
+copr.fedorainfracloud.org/api; the token expires every 180 days, so
+renew it there and update the secret). The project comes from the
+`COPR_PROJECT` repository variable (Settings → Secrets and variables →
+Actions → Variables), `timbo-slice/nebula-player` when unset. Without
+the secret the job only warns; start the build by hand (the package's
+**Rebuild** button).
 
 ### Signing
 
@@ -161,5 +170,5 @@ To release:
    `packaging/release-notes/<version>.md`.
 2. Push, then run **Actions → Build → Run workflow** with **publish**
    ticked. It creates the GitHub pre-release `v<version>` with every
-   package (and signatures, when the secrets are set).
-3. Start the COPR build.
+   package (and signatures, when the secrets are set), then starts the
+   COPR build (or, without `COPR_CONFIG`, click **Rebuild** on COPR).

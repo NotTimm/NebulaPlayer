@@ -55,10 +55,14 @@ Last updated 2026-10-21.
   the notes file's Windows line mentioned the `vulkan` folder.
 - COPR: project `timbo-slice/nebula-player` (owner's account), package
   `nebula-player` from SCM + make srpm, chroots Fedora 43/44/45/rawhide
-  x86_64, no auto-rebuild (start it by hand after each release). Plan
-  (owner, "this weekend"): one `timbo-slice/nebula-apps` project holding
-  both nebula-player and nebula-reader; the Reader's workflow `copr` job
-  then needs its project name changed (a workflow paste).
+  x86_64, no auto-rebuild; first build 11184764 (alpha.1) started by
+  hand. **Pending paste:** `packaging/pending/build.yml` adds the
+  workflow's `copr` job; once it's in, delete the pending copy. The job (secret COPR_CONFIG, project from the
+  COPR_PROJECT variable, default timbo-slice/nebula-player) starts it
+  after each publish. Plan (owner, "this weekend"): one
+  `timbo-slice/nebula-apps` project holding both nebula-player and
+  nebula-reader: here that's just setting COPR_PROJECT; the Reader's
+  workflow `copr` job needs its project name changed (a workflow paste).
 - Testing: `tools/mock-jellyfin.py` (also `--legacy` for 10.8 routes).
   Seen working in Xvfb against it: sign-in (Quick Connect), home, library
   grid, show/movie pages, search, settings, playback with reports,
