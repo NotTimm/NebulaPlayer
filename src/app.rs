@@ -19,7 +19,8 @@ use cosmic::{executor, Application, ApplicationExt, Element};
 use crate::images::{self, Key};
 use crate::jellyfin::{self, Account, Accounts, ImageRef, Item, Report, SortBy};
 use crate::mpv;
-use crate::settings::{Settings, SkipMode, ThemeChoice};
+use crate::settings::{AccentChoice, Settings, SkipMode, ThemeChoice};
+use cosmic::cosmic_theme::palette::Srgb;
 
 mod details;
 mod home;
@@ -247,6 +248,11 @@ pub enum Message {
     // Settings
     ToggleSettings,
     SetTheme(usize),
+    SetAccent(usize),
+    /// The desktop's accent colour, now or changed.
+    DesktopAccent(Srgb),
+    /// A click on the page while the sidebar is open.
+    CloseNav,
     SetFullscreen(bool),
     SetHwdec(bool),
     SetAutoplay(bool),
@@ -275,6 +281,8 @@ pub struct App {
     signin: SignIn,
     local: Vec<(PathBuf, Vec<LocalFile>)>,
     local_scanning: bool,
+    /// The desktop's accent colour, if it has one.
+    desktop_accent: Option<Srgb>,
     images: HashMap<Key, images::Picture>,
     images_pending: HashSet<Key>,
     player: Option<mpv::Player>,
@@ -724,6 +732,10 @@ impl App {
         Task::batch(tasks)
     }
 
+    fn apply_theme(&self) -> Task<Message> {
+        cosmic::command::set_theme(crate::theme::build(self.settings.theme, self.settings.accent, self.desktop_accent))
+    }
+
     fn scan_local(&mut self) -> Task<Message> {
         let folders = self.settings.local_folders.clone();
         self.local_scanning = true;
@@ -887,6 +899,7 @@ impl Application for App {
             signin: SignIn::default(),
             local: Vec::new(),
             local_scanning: false,
+            desktop_accent: crate::theme::desktop_accent(),
             images: HashMap::new(),
             images_pending: HashSet::new(),
             player: None,
@@ -895,6 +908,8 @@ impl Application for App {
             error: None,
         };
         app.set_header_title("Nebula Player".into());
+        // The sidebar opens from the header's button, over the page.
+        app.core.nav_bar_set_toggled(false);
         let title = match app.core.main_window_id() {
             Some(id) => app.set_window_title("Nebula Player".into(), id),
             None => Task::none(),
@@ -912,6 +927,7 @@ impl Application for App {
 
     fn on_nav_select(&mut self, id: nav_bar::Id) -> Task<Self::Message> {
         self.nav.activate(id);
+        self.core.nav_bar_set_toggled(false);
         let task = match self.nav.data::<NavTarget>(id).cloned() {
             Some(NavTarget::Home) => {
                 self.go(Page::Home);
@@ -983,6 +999,8 @@ impl Application for App {
                 _ => None,
             }));
         }
+        #[cfg(target_os = "linux")]
+        subs.push(crate::theme::accent_changes().map(Message::DesktopAccent));
         if self.player.is_some() {
             subs.push(time::every(Duration::from_millis(500)).map(|_| Message::PlayerTick));
         }
@@ -1013,7 +1031,17 @@ impl Application for App {
         if let Some(err) = &self.error {
             col = col.push(widgets::error_banner(err));
         }
-        col.push(body).width(Length::Fill).height(Length::Fill).into()
+        let col = col.push(body).width(Length::Fill).height(Length::Fill);
+        // A click anywhere on the page closes the sidebar, as well as
+        // doing what it does.
+        let close_nav = (self.core.nav_bar_active() && self.nav_model().is_some()).then_some(Message::CloseNav);
+        crate::input::gestures(col).on_press_maybe(close_nav).into()
+    }
+
+    /// COSMIC's own theme settings changed (its accent among them).
+    fn system_theme_update(&mut self, _keys: &[&'static str], new_theme: &cosmic::cosmic_theme::Theme) -> Task<Self::Message> {
+        let a = new_theme.accent_color();
+        self.update(Message::DesktopAccent(Srgb::new(a.red, a.green, a.blue)))
     }
 }
 
@@ -1482,9 +1510,28 @@ impl App {
                 if choice != self.settings.theme {
                     self.settings.theme = choice;
                     self.settings.save();
-                    return cosmic::command::set_theme(crate::theme::build(choice));
+                    return self.apply_theme();
                 }
             }
+            Message::SetAccent(i) => {
+                let choice = AccentChoice::ALL.get(i).copied().unwrap_or_default();
+                if choice != self.settings.accent {
+                    self.settings.accent = choice;
+                    self.settings.save();
+                    return self.apply_theme();
+                }
+            }
+            Message::DesktopAccent(c) => {
+                let close = |a: Srgb, b: Srgb| (a.red - b.red).abs() + (a.green - b.green).abs() + (a.blue - b.blue).abs() < 0.01;
+                if self.desktop_accent.is_some_and(|old| close(old, c)) {
+                    return Task::none();
+                }
+                self.desktop_accent = Some(c);
+                if self.settings.theme == ThemeChoice::Jellyfin && self.settings.accent == AccentChoice::Desktop {
+                    return self.apply_theme();
+                }
+            }
+            Message::CloseNav => self.core.nav_bar_set_toggled(false),
             Message::SetFullscreen(on) => {
                 self.settings.fullscreen = on;
                 self.settings.save();

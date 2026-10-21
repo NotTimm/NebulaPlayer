@@ -5,7 +5,7 @@ use cosmic::widget;
 use cosmic::Element;
 
 use super::{App, Message};
-use crate::settings::{SkipMode, ThemeChoice};
+use crate::settings::{AccentChoice, SkipMode, ThemeChoice};
 
 const THEME_LABELS: [&str; 2] = ["Jellyfin", "System (COSMIC)"];
 
@@ -37,7 +37,7 @@ impl App {
             widget::button::standard("Add a Server or User").on_press(Message::AddAccount).into(),
         ]));
 
-        let look = widget::settings::section().title("Appearance").add(widget::settings::item(
+        let mut look = widget::settings::section().title("Appearance").add(widget::settings::item(
             "Colors",
             widget::dropdown(
                 &THEME_LABELS[..],
@@ -45,6 +45,17 @@ impl App {
                 Message::SetTheme,
             ),
         ));
+        // The desktop's theme brings its own accent.
+        if s.theme == ThemeChoice::Jellyfin {
+            look = look.add(widget::settings::item(
+                "Accent color",
+                widget::dropdown(
+                    &AccentChoice::LABELS[..],
+                    AccentChoice::ALL.iter().position(|a| *a == s.accent),
+                    Message::SetAccent,
+                ),
+            ));
+        }
 
         let playback = widget::settings::section()
             .title("Playback (mpv)")

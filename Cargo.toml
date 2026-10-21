@@ -32,6 +32,8 @@ features = ["wgpu", "winit", "tokio", "multi-window"]
 # Same git/rev as above, so cargo merges these into one libcosmic.
 [target.'cfg(target_os = "linux")'.dependencies]
 libcosmic = { git = "https://github.com/NotTimm/libcosmic.git", rev = "cd86f68873413a5340345a17fe8517f51a134d5d", default-features = false, features = ["dbus-config", "wayland", "xdg-portal"] }
+# The desktop's accent colour (XDG settings portal); libcosmic's own copy.
+ashpd = { version = "0.12.3", default-features = false, features = ["tokio"] }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 libcosmic = { git = "https://github.com/NotTimm/libcosmic.git", rev = "cd86f68873413a5340345a17fe8517f51a134d5d", default-features = false, features = ["rfd"] }

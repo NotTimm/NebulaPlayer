@@ -3,6 +3,7 @@
 
 mod app;
 mod images;
+mod input;
 mod jellyfin;
 mod mpv;
 mod platform;
@@ -45,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let saved = settings::Settings::load();
     let mut settings = Settings::default()
         .size(Size::new(1280.0, 820.0))
-        .theme(theme::build(saved.theme))
+        .theme(theme::build(saved.theme, saved.accent, theme::desktop_accent()))
         // Windows and macOS draw their own title bar.
         .client_decorations(cfg!(target_os = "linux"));
     if let Some(icons) = platform::fallback_icon_theme() {

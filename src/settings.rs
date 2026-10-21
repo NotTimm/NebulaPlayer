@@ -13,6 +13,21 @@ pub enum ThemeChoice {
     System,
 }
 
+/// The accent colour of the Jellyfin theme.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AccentChoice {
+    /// The desktop's accent, when it has one; Jellyfin's blue otherwise.
+    #[default]
+    Desktop,
+    /// Always Jellyfin's blue.
+    Jellyfin,
+}
+
+impl AccentChoice {
+    pub const ALL: [AccentChoice; 2] = [AccentChoice::Desktop, AccentChoice::Jellyfin];
+    pub const LABELS: [&'static str; 2] = ["Desktop's accent", "Jellyfin blue"];
+}
+
 /// What happens at an intro, credits, recap or preview the server knows
 /// about (Jellyfin's media segments, from Intro Skipper and the like).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,6 +48,7 @@ impl SkipMode {
 #[serde(default)]
 pub struct Settings {
     pub theme: ThemeChoice,
+    pub accent: AccentChoice,
     /// The signed-in account shown (`Account::key`).
     pub account: Option<String>,
     /// mpv opens full screen.
@@ -51,6 +67,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             theme: ThemeChoice::Jellyfin,
+            accent: AccentChoice::Desktop,
             account: None,
             fullscreen: false,
             hwdec: true,

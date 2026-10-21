@@ -3361,6 +3361,7 @@ dependencies = [
 name = "nebula-player"
 version = "0.1.0-alpha.1"
 dependencies = [
+ "ashpd 0.12.3",
  "env_logger",
  "image",
  "libcosmic",
