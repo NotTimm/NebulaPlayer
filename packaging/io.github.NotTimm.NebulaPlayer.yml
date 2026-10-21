@@ -140,7 +140,9 @@ modules:
       - install -Dm0755 target/release/nebula-player /app/bin/nebula-player
       - install -Dm0644 res/io.github.NotTimm.NebulaPlayer.desktop
         /app/share/applications/io.github.NotTimm.NebulaPlayer.desktop
+      # Flatpak refuses icons above 512x512 (the 1024 one is for macOS).
       - for icon in res/icons/hicolor/*/apps/io.github.NotTimm.NebulaPlayer.*; do
+          case "$icon" in */1024x1024/*) continue ;; esac;
           install -Dm0644 "$icon" "/app/share/icons/hicolor/${icon#res/icons/hicolor/}";
         done
       - install -Dm0644 res/io.github.NotTimm.NebulaPlayer.metainfo.xml
