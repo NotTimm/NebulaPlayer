@@ -41,9 +41,20 @@ files are play-only, without scraping; metadata comes from Jellyfin.
 
 Last updated 2026-10-21.
 
-- CI: `.github/workflows/build.yml` (added by the owner on github.com).
-  First run green 2026-10-21: Linux .deb/.rpm/.tar.gz and Windows .zip as
-  artifacts. No macOS job yet (offered; owner to decide). Not released.
+- **Pending for the owner:** `packaging/pending/build.yml` replaces
+  `.github/workflows/build.yml` (pasted on github.com). It's the full
+  workflow modelled on Nebula Reader's minus COPR and winget: deb, rpm,
+  AppImage, flatpak, Fedora spec + vendor, Windows zip + setup, macOS
+  dmg, minisign, publish. Once it's in: delete the pending copy, the
+  `[package.metadata.deb]`/`generate-rpm` tables in Cargo.toml and
+  `res/io.github.NotTimm.NebulaPlayer.svg` (kept only for the old
+  workflow). Then fix whatever its first run finds: every job calls a
+  script in packaging/, so fixes need no new paste. Not yet run there:
+  flatpak (Flathub is blocked from cloud sessions), macOS, Windows
+  installer, Fedora spec rpmbuild.
+- COPR: spec + `.copr/Makefile` ready; the project isn't created yet
+  (steps in docs/DEVELOPING.md). Signing uses the reader's key if the
+  owner adds MINISIGN_KEY/MINISIGN_PASSWORD to this repo.
 - Testing: `tools/mock-jellyfin.py` (also `--legacy` for 10.8 routes).
   Seen working in Xvfb against it: sign-in (Quick Connect), home, library
   grid, show/movie pages, search, settings, playback with reports,
@@ -69,5 +80,4 @@ Last updated 2026-10-21.
   the window has opened (starting mpv's renderer while the app's was
   starting crashed Mesa).
 - Not yet: embedded video (see docs/DEVELOPING.md "Embedding"), an
-  in-app track picker, transcoding fallback, a Windows installer, macOS
-  builds, Fedora COPR.
+  in-app track picker, transcoding fallback, in-app updates.

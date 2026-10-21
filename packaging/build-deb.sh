@@ -21,7 +21,9 @@ FALLBACK_DEPS="libc6, libgcc-s1, libxkbcommon0, libssl3"
 # Loaded at run time; libmpv2 on Debian 12+ and Ubuntu 23.10+.
 MPV_DEPS="libmpv2 | libmpv1"
 
-VERSION="$(version_native)"
+# Debian revision 1, like the .rpm's release: the first test builds were
+# 0.1.0~alpha.1-1, and a version without a revision would sort below them.
+VERSION="$(version_native)-1"
 if command -v dpkg >/dev/null 2>&1; then
     ARCH="$(dpkg --print-architecture)"
 else

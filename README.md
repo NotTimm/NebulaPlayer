@@ -39,10 +39,22 @@ screen, `j`/`#` for subtitle/audio tracks, `q` to close). Your own
 
 ## Installing
 
-Linux needs libmpv: `sudo dnf install mpv-libs` on Fedora,
-`sudo apt install libmpv2` on Debian and Ubuntu. Builds are on the
-[Releases](https://github.com/NotTimm/NebulaPlayer/releases) page and are
-marked as pre-releases while the app is in alpha/beta.
+Builds are on the [Releases](https://github.com/NotTimm/NebulaPlayer/releases)
+page, marked as pre-releases while the app is in alpha/beta.
+
+- **Fedora:** `sudo dnf install ./nebula-player-*.rpm` (pulls in `mpv-libs`).
+- **Ubuntu / Debian:** `sudo apt install ./nebula-player_*.deb` (pulls in
+  `libmpv2`).
+- **Any Linux:** the `.flatpak`
+  (`flatpak install --user NebulaPlayer-*.flatpak`) or the `.AppImage`,
+  which both carry their own mpv.
+- **Windows:** run the `-setup.exe`, or unzip the `.zip` and run
+  `nebula-player.exe` (keep `libmpv-2.dll` next to it).
+- **macOS (Apple Silicon):** open the `.dmg` and drag Nebula Player to
+  Applications. It isn't signed by Apple yet, so the first time,
+  right-click it and choose Open.
+
+Each file has a minisign signature (`.minisig`) once signing is set up.
 
 Building from source is covered in [docs/DEVELOPING.md](docs/DEVELOPING.md).
 

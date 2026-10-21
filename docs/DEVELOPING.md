@@ -98,9 +98,68 @@ Nebula Player uses the owner's fork `NotTimm/libcosmic` at the same
 commit as Nebula Reader. When Nebula Reader moves its pin after syncing
 with upstream, move this one to match.
 
+## Packaging
+
+Each package has a script in `packaging/`, and `.github/workflows/build.yml`
+runs them on every push to `main` (the files are kept as the run's
+artifacts for 14 days):
+
+| Package | Script | Notes |
+|---|---|---|
+| `.deb` | `build-deb.sh` | Ubuntu 24.04; depends on `libmpv2 \| libmpv1` |
+| `.rpm` | `build-rpm.sh` | built in a Fedora container; requires `mpv-libs` |
+| AppImage | `build-appimage.sh` | bundles libmpv and what it links |
+| `.flatpak` | `build-flatpak.sh` | GNOME runtime; builds libmpv (Celluloid's recipe) |
+| Windows `.zip` and setup `.exe` | `build-windows.ps1` | Inno Setup; ships `libmpv-2.dll` |
+| macOS `.dmg` | `build-macos.sh` | Homebrew's mpv program and its libraries inside the .app |
+| Fedora/COPR | `fedora/nebula-player.spec`, `fedora/make-vendor.sh` | offline build from the release tarballs |
+
+`packaging/build-all.sh` builds whichever of these the machine has tools
+for. `packaging/make-icons.sh` regenerates every icon from
+`res/icons/source/nebula-player.svg`. Every job then installs or runs what
+it built and checks `nebula-player --check-mpv`, which prints which mpv the
+app found, or fails.
+
+On the laptop, build gently:
+`set -x CARGO_BUILD_JOBS 4; nice -n 19 bash packaging/build-rpm.sh`.
+
+### Fedora and COPR
+
+`packaging/fedora/nebula-player.spec` builds offline from the release's
+source tarball and its vendor tarball (`nebula-player-<version>-vendor.tar.xz`,
+every crate including the libcosmic fork's git ones), with Fedora's Rust
+macros. The `fedora` job builds it the way COPR does, on every push. Keep
+its `Version` in step with Cargo.toml, `~` for Cargo's `-`; the workflow
+checks.
+
+To set up COPR (no CI job starts it yet):
+
+1. Create a project on copr.fedorainfracloud.org (e.g. `nebula-player`)
+   with the Fedora chroots you want.
+2. Add a package with source type **SCM**: clone URL
+   `https://github.com/NotTimm/NebulaPlayer`, build method **make srpm**
+   (it uses `.copr/Makefile`, which downloads the release's tarballs).
+3. Once a release is published, start a build of that package.
+
+### Signing
+
+Every published file gets a minisign signature (`<file>.minisig`) from the
+repository secrets `MINISIGN_KEY` (the whole encrypted secret key file) and
+`MINISIGN_PASSWORD`, the same key as Nebula Reader's (ID AFE5BA3AD81D4B31;
+public key in `packaging/minisign.pub`). The `sign` job checks every
+signature against that public key. Without the secrets, builds and
+releases go out unsigned, with a warning.
+
 ## Releases
 
 Versions stay pre-release (`0.x.y-alpha.N`, then `-beta.N`) until the
-owner says otherwise, and GitHub releases are marked as pre-releases.
-Every release gets user-facing notes in
-`packaging/release-notes/<version>.md`.
+owner says otherwise. The workflow refuses to publish anything else.
+To release:
+
+1. Bump `version` in Cargo.toml and `Version` in the Fedora spec (with
+   `~`), add a `%changelog` entry, and write
+   `packaging/release-notes/<version>.md`.
+2. Push, then run **Actions → Build → Run workflow** with **publish**
+   ticked. It creates the GitHub pre-release `v<version>` with every
+   package (and signatures, when the secrets are set).
+3. Start the COPR build.
