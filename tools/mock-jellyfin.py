@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """A fake Jellyfin server for trying Nebula Player without a real one.
 
-    python3 tools/mock-jellyfin.py [port]     (default 8096)
+    python3 tools/mock-jellyfin.py [port] [--legacy]     (default 8096)
+
+With --legacy it answers only the routes Jellyfin 10.8 had
+(/Users/{id}/Items...), like an old server; otherwise both those and the
+10.9+ ones (/UserViews, /UserItems/Resume, /Items?userId=...).
 
 Sign in as "demo" with any password (Quick Connect is offered too and
 approves itself after a few seconds). There are three movies and a show
@@ -105,6 +109,23 @@ USER_DATA["ep-1-2"]["PlaybackPositionTicks"] = 20 * 60 * TICKS
 LAST_PLAYED = {"movie-2": 2, "ep-1-2": 1}
 
 QUICK = {}
+LEGACY_ONLY = "--legacy" in sys.argv
+
+def legacy_path(path):
+    """Maps a Jellyfin 10.9+ per-user route to the 10.8 one it replaced."""
+    parts = [x for x in path.split("/") if x]
+    user = f"/Users/{USER_ID}"
+    if path == "/UserViews":
+        return f"{user}/Views"
+    if path == "/UserItems/Resume":
+        return f"{user}/Items/Resume"
+    if path in ("/Items", "/Items/Latest"):
+        return user + path
+    if len(parts) == 2 and parts[0] == "Items":
+        return f"{user}/Items/{parts[1]}"
+    if len(parts) == 2 and parts[0] in ("UserPlayedItems", "UserFavoriteItems"):
+        return f"{user}/{parts[0][4:]}/{parts[1]}"
+    return None
 
 def with_user_data(item):
     out = dict(item)
@@ -219,9 +240,22 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.do_GET()
 
+    def route(self):
+        """The request's path, with 10.9+ routes mapped to the old ones."""
+        p = urlparse(self.path).path
+        mapped = legacy_path(p)
+        if mapped:
+            if LEGACY_ONLY:
+                return None
+            return mapped
+        return p
+
     def do_GET(self):
         u = urlparse(self.path)
-        p, q = u.path, {k.lower(): v[0] for k, v in parse_qs(u.query).items()}
+        q = {k.lower(): v[0] for k, v in parse_qs(u.query).items()}
+        p = self.route()
+        if p is None:
+            return self.send({"error": "no such route on this (old) server"}, 404)
         parts = [x for x in p.split("/") if x]
 
         if p == "/System/Info/Public":
@@ -336,7 +370,9 @@ class Handler(BaseHTTPRequestHandler):
                 left -= len(chunk)
 
     def do_POST(self):
-        p = urlparse(self.path).path
+        p = self.route()
+        if p is None:
+            return self.send({"error": "no such route on this (old) server"}, 404)
         parts = [x for x in p.split("/") if x]
         auth_reply = {"User": {"Id": USER_ID, "Name": "demo"}, "AccessToken": TOKEN, "ServerId": SERVER_ID}
         if p == "/QuickConnect/Initiate":
@@ -372,7 +408,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         if not self.authed():
             return self.send({}, 401)
-        return self.user_flag([x for x in urlparse(self.path).path.split("/") if x], False)
+        p = self.route()
+        if p is None:
+            return self.send({"error": "no such route on this (old) server"}, 404)
+        return self.user_flag([x for x in p.split("/") if x], False)
 
     def user_flag(self, parts, on):
         if len(parts) == 4 and parts[:2] == ["Users", USER_ID] and parts[3] in USER_DATA:
@@ -389,6 +428,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8096
-    print(f"Mock Jellyfin on http://localhost:{port} (user: demo, any password)")
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    port = int(args[0]) if args else 8096
+    kind = "Jellyfin 10.8 routes only" if LEGACY_ONLY else "10.9+ and 10.8 routes"
+    print(f"Mock Jellyfin on http://localhost:{port} ({kind}; user: demo, any password)")
     ThreadingHTTPServer(("", port), Handler).serve_forever()

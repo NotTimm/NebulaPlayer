@@ -13,9 +13,10 @@
 //! last position), so the server keeps resume points, marks things watched
 //! past 90 % and shows the session on its dashboard.
 //!
-//! Routes: Jellyfin 10.9 moved `/Users/{id}/Items/...` to `/UserItems/...`
-//! and `/Items/...?userId=`; the old ones still answer on 10.9 and 10.10,
-//! and are what 10.8 has, so those are used.
+//! Routes: Jellyfin 10.9 moved the per-user `/Users/{id}/...` routes to
+//! `/UserViews`, `/UserItems/...` and `/Items/...?userId=`, and marked the
+//! old ones for removal. The new route is asked first; a server that
+//! answers 404 (10.8 and older) is asked the old one ([`UserRoute`]).
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -55,6 +56,15 @@ impl Account {
 
     fn user(&self) -> String {
         format!("{}/Users/{}", self.url, self.user_id)
+    }
+
+    /// `/Items/...` for one user (Jellyfin 10.9+) and the route it
+    /// replaced.
+    fn items_route(&self, rest: &str, params: &str) -> UserRoute {
+        UserRoute {
+            current: query(self, &format!("/Items{rest}"), &format!("userId={}&{params}", self.user_id)),
+            legacy: query(self, &format!("/Users/{}/Items{rest}", self.user_id), params),
+        }
     }
 
     /// An image of an item, at most `max_width` wide.
@@ -247,11 +257,39 @@ async fn post_json<T: serde::de::DeserializeOwned>(url: &str, auth: &str, body: 
     resp.json().await.map_err(|e| format!("unexpected reply: {e}"))
 }
 
+/// A per-user request as Jellyfin 10.9+ names it and as older servers do.
+struct UserRoute {
+    current: String,
+    legacy: String,
+}
+
+fn not_found(e: &str) -> bool {
+    e.contains("HTTP 404")
+}
+
+impl UserRoute {
+    async fn get<T: serde::de::DeserializeOwned>(&self, account: &Account) -> Result<T, String> {
+        match get_json(&self.current, &account.auth()).await {
+            Err(e) if not_found(&e) => get_json(&self.legacy, &account.auth()).await,
+            r => r,
+        }
+    }
+
+    /// POST (`on`) or DELETE a flag such as played or favourite.
+    async fn set(&self, account: &Account, on: bool) -> Result<(), String> {
+        let req = |url: &str| if on { client().post(url) } else { client().delete(url) };
+        match send(req(&self.current), &account.auth()).await {
+            Err(e) if not_found(&e) => send(req(&self.legacy), &account.auth()).await,
+            r => r,
+        }
+    }
+}
+
 /// A request whose reply body doesn't matter (reports, marking played).
 async fn send(req: reqwest::RequestBuilder, auth: &str) -> Result<(), String> {
     let resp = req.header("Authorization", auth).send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status()));
+        return Err(format!("server error: HTTP {}", resp.status()));
     }
     Ok(())
 }
@@ -605,7 +643,8 @@ const FIELDS: &str = "Overview,Genres,PrimaryImageAspectRatio,ProductionYear,Off
 const IMAGES: &str = "enableImageTypes=Primary,Backdrop,Thumb,Logo&imageTypeLimit=1&enableUserData=true";
 
 fn query(account: &Account, path: &str, params: &str) -> String {
-    format!("{}{path}?{params}&fields={FIELDS}&{IMAGES}", account.url)
+    let sep = if params.is_empty() { "" } else { "&" };
+    format!("{}{path}?{params}{sep}fields={FIELDS}&{IMAGES}", account.url)
 }
 
 /// Library kinds this app has nothing to play in.
@@ -618,14 +657,22 @@ fn is_video_library(view: &Item) -> bool {
 
 /// The user's libraries (Movies, Shows, …), books and music left out.
 pub async fn libraries(account: &Account) -> Result<Vec<Item>, String> {
-    let page: ItemsPage = get_json(&format!("{}/Views", account.user()), &account.auth()).await?;
+    let route = UserRoute {
+        current: format!("{}/UserViews?userId={}", account.url, account.user_id),
+        legacy: format!("{}/Views", account.user()),
+    };
+    let page: ItemsPage = route.get(account).await?;
     Ok(page.items.into_iter().filter(is_video_library).collect())
 }
 
 /// Continue Watching: started and not finished, most recent first.
 pub async fn resume(account: &Account, limit: usize) -> Result<Vec<Item>, String> {
-    let url = query(account, &format!("/Users/{}/Items/Resume", account.user_id), &format!("limit={limit}&mediaTypes=Video&recursive=true"));
-    let page: ItemsPage = get_json(&url, &account.auth()).await?;
+    let params = format!("limit={limit}&mediaTypes=Video&recursive=true");
+    let route = UserRoute {
+        current: query(account, "/UserItems/Resume", &format!("userId={}&{params}", account.user_id)),
+        legacy: query(account, &format!("/Users/{}/Items/Resume", account.user_id), &params),
+    };
+    let page: ItemsPage = route.get(account).await?;
     Ok(page.items)
 }
 
@@ -642,42 +689,39 @@ pub async fn next_up(account: &Account, limit: usize, series_id: Option<&str>) -
 /// Recently added to one library. Episodes of the same show are grouped
 /// into the show, like Jellyfin's home screen.
 pub async fn latest(account: &Account, library_id: &str, limit: usize) -> Result<Vec<Item>, String> {
-    let url = query(
-        account,
-        &format!("/Users/{}/Items/Latest", account.user_id),
-        &format!("parentId={library_id}&limit={limit}&groupItems=true"),
-    );
-    get_json(&url, &account.auth()).await
+    account
+        .items_route("/Latest", &format!("parentId={library_id}&limit={limit}&groupItems=true"))
+        .get(account)
+        .await
 }
 
 /// The featured banner: random movies and shows that have a backdrop.
 pub async fn featured(account: &Account, limit: usize) -> Result<Vec<Item>, String> {
-    let url = query(
-        account,
-        &format!("/Users/{}/Items", account.user_id),
+    let route = account.items_route(
+        "",
         &format!("includeItemTypes=Movie,Series&recursive=true&sortBy=Random&imageTypes=Backdrop&hasOverview=true&isPlayed=false&limit={limit}"),
     );
-    let page: ItemsPage = get_json(&url, &account.auth()).await?;
+    let page: ItemsPage = route.get(account).await?;
     if !page.items.is_empty() {
         return Ok(page.items);
     }
     // Everything watched: random picks from all of it then.
-    let url = query(
-        account,
-        &format!("/Users/{}/Items", account.user_id),
+    let route = account.items_route(
+        "",
         &format!("includeItemTypes=Movie,Series&recursive=true&sortBy=Random&imageTypes=Backdrop&limit={limit}"),
     );
-    let page: ItemsPage = get_json(&url, &account.auth()).await?;
+    let page: ItemsPage = route.get(account).await?;
     Ok(page.items)
 }
 
 /// One item, with what a details page shows (cast, studios, sources).
 pub async fn item(account: &Account, id: &str) -> Result<Item, String> {
-    let url = format!(
-        "{}/Items/{id}?fields={FIELDS},People,Studios,Taglines,MediaSources,DateCreated&{IMAGES}",
-        account.user()
-    );
-    get_json(&url, &account.auth()).await
+    let tail = format!("fields={FIELDS},People,Studios,Taglines,MediaSources,DateCreated&{IMAGES}");
+    let route = UserRoute {
+        current: format!("{}/Items/{id}?userId={}&{tail}", account.url, account.user_id),
+        legacy: format!("{}/Items/{id}?{tail}", account.user()),
+    };
+    route.get(account).await
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -724,8 +768,7 @@ pub async fn library_page(
         Some(k) => params.push_str(&format!("&includeItemTypes={k}&recursive=true")),
         None => params.push_str("&excludeItemTypes=Audio,Book,Photo,MusicAlbum"),
     }
-    let url = query(account, &format!("/Users/{}/Items", account.user_id), &params);
-    let page: ItemsPage = get_json(&url, &account.auth()).await?;
+    let page: ItemsPage = account.items_route("", &params).get(account).await?;
     Ok((page.items, page.total_record_count))
 }
 
@@ -781,25 +824,28 @@ pub async fn similar(account: &Account, id: &str, limit: usize) -> Result<Vec<It
 /// Movies, shows and episodes matching `term`.
 pub async fn search(account: &Account, term: &str, limit: usize) -> Result<Vec<Item>, String> {
     let term: String = url::form_urlencoded::byte_serialize(term.as_bytes()).collect();
-    let url = query(
-        account,
-        &format!("/Users/{}/Items", account.user_id),
+    let route = account.items_route(
+        "",
         &format!("searchTerm={term}&includeItemTypes=Movie,Series,Episode,BoxSet&recursive=true&limit={limit}"),
     );
-    let page: ItemsPage = get_json(&url, &account.auth()).await?;
+    let page: ItemsPage = route.get(account).await?;
     Ok(page.items)
 }
 
 pub async fn set_played(account: &Account, id: &str, played: bool) -> Result<(), String> {
-    let url = format!("{}/PlayedItems/{id}", account.user());
-    let req = if played { client().post(url) } else { client().delete(url) };
-    send(req, &account.auth()).await
+    let route = UserRoute {
+        current: format!("{}/UserPlayedItems/{id}?userId={}", account.url, account.user_id),
+        legacy: format!("{}/PlayedItems/{id}", account.user()),
+    };
+    route.set(account, played).await
 }
 
 pub async fn set_favorite(account: &Account, id: &str, favorite: bool) -> Result<(), String> {
-    let url = format!("{}/FavoriteItems/{id}", account.user());
-    let req = if favorite { client().post(url) } else { client().delete(url) };
-    send(req, &account.auth()).await
+    let route = UserRoute {
+        current: format!("{}/UserFavoriteItems/{id}?userId={}", account.url, account.user_id),
+        legacy: format!("{}/FavoriteItems/{id}", account.user()),
+    };
+    route.set(account, favorite).await
 }
 
 /// Downloads an image.
