@@ -141,6 +141,9 @@ struct Playback {
     /// The episodes either side, for the player's buttons.
     previous: Option<Item>,
     next: Option<Item>,
+    /// Thumbnails for the seek bar, when the server has made them.
+    trickplay: Option<player::Trickplay>,
+    chapters: Vec<jellyfin::Chapter>,
     /// `mpv::State::loaded` when this started, to tell its load from the
     /// previous file's.
     loaded_before: u64,
@@ -183,6 +186,7 @@ impl RemotePlay {
 #[derive(Clone, Debug)]
 pub struct PlayStart {
     item: Item,
+    extras: jellyfin::SeekExtras,
     previous: Option<Item>,
     next: Option<Item>,
     info: jellyfin::PlaybackInfo,
@@ -293,6 +297,8 @@ pub struct App {
     player: Option<mpv::Player>,
     playback: Option<Playback>,
     player_ui: PlayerUi,
+    /// The window's width, in logical pixels.
+    window_width: f32,
     /// A file from the command line, played once the window is up: mpv
     /// setting up its renderer while the app sets up its own has crashed
     /// graphics drivers.
@@ -596,10 +602,19 @@ impl App {
                 return stopped;
             }
         };
+        // Thumbnails about a fifth of the window across, as jellyfin-web
+        // picks them for the screen.
+        let max_width = ((self.window_width * self.core.scale_factor() * 0.2) as u32).max(240);
+        let trickplay = start
+            .extras
+            .trickplay(&source.id, max_width)
+            .map(|info| player::Trickplay::new(start.item.id.clone(), source.id.clone(), info));
         self.playback = Some(Playback {
             title: load.title.clone(),
             previous: start.previous,
             next: start.next,
+            trickplay,
+            chapters: start.extras.chapters,
             remote: Some(RemotePlay {
                 account,
                 item: start.item,
@@ -642,6 +657,8 @@ impl App {
                     title: load.title.clone(),
                     previous: None,
                     next: None,
+                    trickplay: None,
+                    chapters: Vec::new(),
                     remote: None,
                     loaded_before,
                     started: false,
@@ -943,6 +960,7 @@ impl Application for App {
             player: None,
             playback: None,
             player_ui: PlayerUi::default(),
+            window_width: 1280.0,
             startup_file: flags,
             error: None,
         };
@@ -985,6 +1003,10 @@ impl Application for App {
             None => Task::none(),
         };
         self.with_snap(task)
+    }
+
+    fn on_window_resize(&mut self, _id: cosmic::iced::window::Id, width: f32, _height: f32) {
+        self.window_width = width;
     }
 
     fn on_escape(&mut self) -> Task<Self::Message> {
@@ -1452,12 +1474,13 @@ impl App {
                                 _ => (None, None),
                             }
                         };
-                        let (info, segments, (previous, next)) = tokio::join!(
+                        let (info, segments, (previous, next), extras) = tokio::join!(
                             jellyfin::playback_info(&account, &item.id),
                             jellyfin::segments(&account, &item.id),
                             neighbours,
+                            jellyfin::seek_extras(&account, &item.id),
                         );
-                        Ok(Box::new(PlayStart { item, previous, next, info: info?, segments, resume }))
+                        Ok(Box::new(PlayStart { item, extras, previous, next, info: info?, segments, resume }))
                     }
                     .await;
                     Message::PlaybackReady(result)

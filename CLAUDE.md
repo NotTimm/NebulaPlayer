@@ -86,6 +86,9 @@ Last updated 2026-10-21 (evening session).
   jellyfin-web keys). "Play in mpv's own window" setting keeps the old
   way. Direct play only, Jellyfin's default tracks mapped to mpv ids,
   external subs, progress reports, autoplay next episode.
+  Trickplay previews and chapter names on the seek bar, fetched as
+  jellyfin-web does (see docs/DEVELOPING.md "Trickplay"); tested against
+  the mock only.
 - 2026-10-21 (owner's requests from using the alpha on a laptop): smooth
   and kinetic scrolling (`src/input.rs`), desktop accent colour with a
   Jellyfin-blue override, sidebar closed by default and closed by any

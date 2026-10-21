@@ -903,6 +903,113 @@ pub async fn image(account: &Account, img: &ImageRef, max_width: u32) -> Result<
 
 // ── Playback ────────────────────────────────────────────────────────────────
 
+/// One size of an item's trickplay thumbnails: the server makes them ahead
+/// of time (a scheduled task, when the library has it turned on), a frame
+/// every `interval` ms, packed `tile_width` × `tile_height` to a JPEG sheet.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct TrickplayInfo {
+    pub width: u32,
+    pub height: u32,
+    pub tile_width: u32,
+    pub tile_height: u32,
+    pub thumbnail_count: u32,
+    /// Milliseconds between thumbnails.
+    pub interval: u32,
+}
+
+impl TrickplayInfo {
+    pub fn per_sheet(&self) -> u32 {
+        self.tile_width * self.tile_height
+    }
+
+    /// The thumbnail for `seconds` in: which sheet, and which tile on it
+    /// (counted across, then down), as jellyfin-web works it out.
+    pub fn locate(&self, seconds: f64) -> Option<(u32, u32)> {
+        if self.interval == 0 || self.per_sheet() == 0 || self.thumbnail_count == 0 {
+            return None;
+        }
+        let n = ((seconds.max(0.0) * 1000.0) as u64 / self.interval as u64).min(self.thumbnail_count as u64 - 1) as u32;
+        Some((n / self.per_sheet(), n % self.per_sheet()))
+    }
+
+    /// How many thumbnails sheet `index` holds (the last may be short).
+    pub fn tiles_on(&self, index: u32) -> u32 {
+        self.thumbnail_count.saturating_sub(index * self.per_sheet()).min(self.per_sheet())
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct Chapter {
+    pub start_position_ticks: i64,
+    pub name: Option<String>,
+}
+
+impl Chapter {
+    pub fn start(&self) -> f64 {
+        self.start_position_ticks as f64 / TICKS_PER_SECOND
+    }
+}
+
+/// What the player shows on its seek bar: trickplay thumbnails (per media
+/// source, per width) and chapters. Asked for only for the item playing:
+/// the server looks the thumbnails up for each item it's asked about.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct SeekExtras {
+    trickplay: HashMap<String, HashMap<String, TrickplayInfo>>,
+    pub chapters: Vec<Chapter>,
+}
+
+impl SeekExtras {
+    /// The thumbnails for `source_id` to use: the widest no wider than
+    /// `max_width`, else the narrowest (jellyfin-web's choice, with
+    /// `max_width` a fifth of the screen).
+    pub fn trickplay(&self, source_id: &str, max_width: u32) -> Option<TrickplayInfo> {
+        // The keys are GUIDs, which may come with or without dashes.
+        let plain = |id: &str| id.replace('-', "").to_lowercase();
+        let sizes = self
+            .trickplay
+            .iter()
+            .find(|(k, _)| plain(k) == plain(source_id))
+            .or_else(|| (self.trickplay.len() == 1).then(|| self.trickplay.iter().next()).flatten())?
+            .1;
+        let fits = sizes.values().filter(|i| i.width <= max_width).max_by_key(|i| i.width);
+        fits.or_else(|| sizes.values().min_by_key(|i| i.width)).copied().filter(|i| i.locate(0.0).is_some())
+    }
+}
+
+/// The trickplay manifest and chapters of one item. Servers before 10.9
+/// (no trickplay) or without them for this item give empty ones.
+pub async fn seek_extras(account: &Account, id: &str) -> SeekExtras {
+    let tail = "fields=Trickplay,Chapters&enableImages=false&enableUserData=false";
+    let route = UserRoute {
+        current: format!("{}/Items/{id}?userId={}&{tail}", account.url, account.user_id),
+        legacy: format!("{}/Items/{id}?{tail}", account.user()),
+    };
+    route.get(account).await.unwrap_or_else(|e| {
+        log::info!("no trickplay or chapters for {id}: {e}");
+        SeekExtras::default()
+    })
+}
+
+/// One sheet of trickplay thumbnails (a JPEG). The server sends a file it
+/// made ahead of time; nothing is generated on request.
+pub async fn trickplay_sheet(account: &Account, item_id: &str, source_id: &str, width: u32, index: u32) -> Result<Vec<u8>, String> {
+    let url = format!("{}/Videos/{item_id}/Trickplay/{width}/{index}.jpg?mediaSourceId={source_id}", account.url);
+    let resp = client()
+        .get(url)
+        .header("Authorization", account.auth())
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    resp.bytes().await.map(|b| b.to_vec()).map_err(|e| e.to_string())
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct MediaSource {
@@ -1169,6 +1276,32 @@ pub fn report_stopped_now(account: &Account, r: &Report) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trickplay_thumbnails_are_found_like_jellyfin_web() {
+        // Jellyfin's defaults: every 10 s, 10 × 10 to a sheet.
+        let info = TrickplayInfo { width: 320, height: 180, tile_width: 10, tile_height: 10, thumbnail_count: 720, interval: 10_000 };
+        assert_eq!(info.locate(0.0), Some((0, 0)));
+        assert_eq!(info.locate(9.9), Some((0, 0)));
+        assert_eq!(info.locate(10.0), Some((0, 1)));
+        assert_eq!(info.locate(1005.0), Some((1, 0)));
+        // Past the end: the last thumbnail.
+        assert_eq!(info.locate(1e9), Some((7, 19)));
+        assert_eq!(info.tiles_on(7), 20);
+        assert_eq!(info.tiles_on(0), 100);
+
+        let json = r#"{"Trickplay":{"1b2c3d4e5f60718293a4b5c6d7e8f901":{
+            "320":{"Width":320,"Height":180,"TileWidth":10,"TileHeight":10,"ThumbnailCount":720,"Interval":10000},
+            "640":{"Width":640,"Height":360,"TileWidth":10,"TileHeight":10,"ThumbnailCount":720,"Interval":10000}}},
+            "Chapters":[{"StartPositionTicks":0,"Name":"Opening"}]}"#;
+        let extras: SeekExtras = serde_json::from_str(json).unwrap();
+        let source = "1b2c3d4e-5f60-7182-93a4-b5c6d7e8f901";
+        assert_eq!(extras.trickplay(source, 400).map(|i| i.width), Some(320));
+        assert_eq!(extras.trickplay(source, 2000).map(|i| i.width), Some(640));
+        assert_eq!(extras.trickplay(source, 100).map(|i| i.width), Some(320));
+        assert_eq!(extras.chapters[0].name.as_deref(), Some("Opening"));
+        assert!(SeekExtras::default().trickplay(source, 400).is_none());
+    }
 
     #[test]
     fn candidate_urls_strip_web_paths() {

@@ -81,6 +81,21 @@ and on pause, and `/Stopped` with the last position. Jellyfin marks an
 item watched past 90 %. At the end of an episode the next one loads into
 the same mpv window.
 
+### Trickplay
+
+Seek bar previews work the way jellyfin-web does them. At play start the
+app asks for the playing item only with `fields=Trickplay,Chapters` (the
+server looks the manifest up per item, so never on list requests). From
+the manifest it picks the widest thumbnails no wider than a fifth of the
+window. The server makes the sheets ahead of time (a scheduled task;
+default a frame every 10 s, 10 × 10 to a 320 px JPEG sheet), and
+`/Videos/{id}/Trickplay/{width}/{n}.jpg` only sends the file. A sheet is
+fetched the first time hovering or dragging needs it, one request at a
+time per sheet, never again once it has failed, and cached on disk with
+the posters (keyed by the manifest too), so a 2-hour movie costs about 8
+small downloads, ever. Up to 6 decoded sheets stay in memory during
+playback. The mock serves 3 × 3 sheets cut from its test video.
+
 ### Intros and credits
 
 `jellyfin::segments` reads Jellyfin's media segments (`/MediaSegments/{id}`,

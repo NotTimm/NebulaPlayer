@@ -4,15 +4,24 @@
 //! audio, subtitle and speed menus, full screen, and a Skip Intro button
 //! when the server knows one. They fade out while the video plays and come
 //! back when the mouse moves. The keys are jellyfin-web's.
+//!
+//! Hovering on (or dragging) the seek bar shows the time there, its
+//! chapter, and the server's trickplay thumbnail for it. The thumbnails
+//! come as the server made them, many to a sheet; a sheet is fetched the
+//! first time the seek bar needs it (once: they're cached on disk too),
+//! never ahead, so scrubbing costs a movie's few sheets at most.
 
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use cosmic::iced::widget::{shader, stack};
 use cosmic::iced::{keyboard, mouse, window, Alignment, Length};
-use cosmic::widget::{self, icon};
+use cosmic::widget::{self, icon, image::Handle};
 use cosmic::{Application, Element};
 
 use super::{App, Message};
+use crate::images::SheetKey;
+use crate::jellyfin::TrickplayInfo;
 use crate::mpv;
 
 /// Jellyfin's default skip lengths.
@@ -21,6 +30,51 @@ const FORWARD: f64 = 30.0;
 /// Controls hide after the mouse has been still this long.
 const HIDE_AFTER: Duration = Duration::from_secs(3);
 const SPEEDS: [f64; 7] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
+/// The times either side of the seek bar, a fixed width so the preview
+/// can be placed over the bar.
+const TIME_W: f32 = 64.0;
+const SEEK_SPACING: f32 = 14.0;
+/// The preview thumbnail's width on screen.
+const PREVIEW_W: f32 = 240.0;
+/// Sheets kept in memory (about 23 MB each at the default size); the ones
+/// furthest from where the user is looking go first. They stay on disk.
+const KEEP_SHEETS: usize = 6;
+
+/// The playing item's trickplay thumbnails.
+pub struct Trickplay {
+    info: TrickplayInfo,
+    item_id: String,
+    source_id: String,
+    sheets: HashMap<u32, Vec<Handle>>,
+    /// Sheets on their way: never asked for twice at once.
+    pending: HashSet<u32>,
+    /// Sheets the server didn't have: not asked for again.
+    failed: HashSet<u32>,
+}
+
+impl Trickplay {
+    pub fn new(item_id: String, source_id: String, info: TrickplayInfo) -> Self {
+        Trickplay { info, item_id, source_id, sheets: HashMap::new(), pending: HashSet::new(), failed: HashSet::new() }
+    }
+
+    fn thumbnail(&self, seconds: f64) -> Option<&Handle> {
+        let (sheet, tile) = self.info.locate(seconds)?;
+        self.sheets.get(&sheet)?.get(tile as usize)
+    }
+
+    /// The preview's size on screen, keeping the thumbnails' shape.
+    fn preview_size(&self) -> (f32, f32) {
+        (PREVIEW_W, (PREVIEW_W * self.info.height as f32 / self.info.width.max(1) as f32).round())
+    }
+
+    fn keep(&mut self, index: u32, tiles: Vec<Handle>) {
+        self.sheets.insert(index, tiles);
+        while self.sheets.len() > KEEP_SHEETS {
+            let far = *self.sheets.keys().max_by_key(|k| k.abs_diff(index)).unwrap();
+            self.sheets.remove(&far);
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Menu {
@@ -39,6 +93,9 @@ pub struct PlayerUi {
     seek_drag: Option<f64>,
     menu: Option<Menu>,
     pub fullscreen: bool,
+    /// Where the pointer is along the seek bar, and the bar's width.
+    hover: Option<f32>,
+    seek_width: f32,
 }
 
 impl Default for PlayerUi {
@@ -50,6 +107,8 @@ impl Default for PlayerUi {
             seek_drag: None,
             menu: None,
             fullscreen: false,
+            hover: None,
+            seek_width: 0.0,
         }
     }
 }
@@ -64,6 +123,11 @@ pub enum PlayerMsg {
     SeekBy(f64),
     SeekDrag(f64),
     SeekRelease,
+    /// The pointer moved along the seek bar (or left it).
+    SeekHover(Option<f32>),
+    SeekWidth(f32),
+    /// A trickplay sheet for item, by number.
+    Sheet(String, u32, Result<Vec<Handle>, String>),
     Volume(f64),
     ToggleMute,
     Audio(i64),
@@ -162,6 +226,7 @@ impl App {
             && !ui.state.paused
             && ui.menu.is_none()
             && ui.seek_drag.is_none()
+            && ui.hover.is_none()
             && ui.last_activity.elapsed() >= HIDE_AFTER
         {
             ui.controls = false;
@@ -179,7 +244,36 @@ impl App {
             }
             PlayerMsg::TogglePause => player.set_paused(!state.paused),
             PlayerMsg::SeekBy(s) => player.seek_by(s),
-            PlayerMsg::SeekDrag(s) => self.player_ui.seek_drag = Some(s),
+            PlayerMsg::SeekDrag(s) => {
+                self.player_ui.seek_drag = Some(s);
+                return self.want_sheet();
+            }
+            PlayerMsg::SeekHover(x) => {
+                self.player_ui.hover = x;
+                return self.want_sheet();
+            }
+            PlayerMsg::SeekWidth(w) => {
+                self.player_ui.seek_width = w;
+                return cosmic::app::Task::none();
+            }
+            PlayerMsg::Sheet(item_id, index, result) => {
+                let Some(tp) = self.playback.as_mut().and_then(|pb| pb.trickplay.as_mut()) else {
+                    return cosmic::app::Task::none();
+                };
+                if tp.item_id != item_id {
+                    return cosmic::app::Task::none();
+                }
+                tp.pending.remove(&index);
+                match result {
+                    Ok(tiles) => tp.keep(index, tiles),
+                    Err(e) => {
+                        log::info!("trickplay sheet {index}: {e}");
+                        tp.failed.insert(index);
+                    }
+                }
+                // The pointer may have moved on to another sheet meanwhile.
+                return self.want_sheet();
+            }
             PlayerMsg::SeekRelease => {
                 if let Some(s) = self.player_ui.seek_drag.take() {
                     player.seek(s);
@@ -271,6 +365,71 @@ impl App {
         })
     }
 
+    /// The time the seek bar's preview is for: where it's dragged to, or
+    /// where the pointer is over it.
+    fn preview_time(&self) -> Option<f64> {
+        let ui = &self.player_ui;
+        let duration = ui.state.duration;
+        if duration <= 0.0 {
+            return None;
+        }
+        ui.seek_drag.or_else(|| {
+            let x = ui.hover?;
+            (ui.seek_width > 0.0).then(|| (x / ui.seek_width).clamp(0.0, 1.0) as f64 * duration)
+        })
+    }
+
+    /// Fetches the trickplay sheet the preview needs, if it isn't here,
+    /// on its way, or known to be missing.
+    fn want_sheet(&mut self) -> cosmic::app::Task<Message> {
+        let time = self.preview_time();
+        let Some(pb) = self.playback.as_mut() else { return cosmic::app::Task::none() };
+        let (Some(time), Some(tp), Some(remote)) = (time, pb.trickplay.as_mut(), pb.remote.as_ref()) else {
+            return cosmic::app::Task::none();
+        };
+        let Some((index, _)) = tp.info.locate(time) else { return cosmic::app::Task::none() };
+        if tp.sheets.contains_key(&index) || tp.failed.contains(&index) || !tp.pending.insert(index) {
+            return cosmic::app::Task::none();
+        }
+        let key = SheetKey { item_id: tp.item_id.clone(), source_id: tp.source_id.clone(), info: tp.info, index };
+        let account = remote.account.clone();
+        cosmic::task::future(async move {
+            let item_id = key.item_id.clone();
+            let result = crate::images::load_sheet(account, key).await;
+            Message::Player(PlayerMsg::Sheet(item_id, index, result))
+        })
+    }
+
+    /// The bubble over the seek bar: the thumbnail, the time, the chapter.
+    fn seek_preview(&self, time: f64) -> Element<'_, Message> {
+        let pb = self.playback.as_ref();
+        let mut col = widget::column::with_capacity(3).spacing(4).align_x(Alignment::Center);
+        if let Some(tp) = pb.and_then(|pb| pb.trickplay.as_ref()) {
+            let (w, h) = tp.preview_size();
+            col = col.push(match tp.thumbnail(time) {
+                Some(handle) => Element::from(
+                    widget::image(handle.clone())
+                        .width(Length::Fixed(w))
+                        .height(Length::Fixed(h))
+                        .border_radius([6.0; 4]),
+                ),
+                // Its sheet is on the way.
+                None => widget::container(widget::Space::new().width(Length::Fixed(w)).height(Length::Fixed(h)))
+                    .class(cosmic::theme::Container::custom(crate::theme::player_menu))
+                    .into(),
+            });
+        }
+        let chapter = pb
+            .and_then(|pb| pb.chapters.iter().take_while(|c| c.start() <= time).last())
+            .and_then(|c| c.name.clone())
+            .filter(|n| !n.is_empty());
+        if let Some(name) = chapter {
+            col = col.push(widget::text::caption(name));
+        }
+        col = col.push(widget::text::heading(clock(time)));
+        widget::container(col).padding(6).class(cosmic::theme::Container::custom(crate::theme::player_menu)).into()
+    }
+
     /// The label of the segment whose Skip button is up.
     fn skip_prompt(&self) -> Option<&'static str> {
         let pb = self.playback.as_ref()?;
@@ -340,17 +499,41 @@ impl App {
 
         let position = ui.seek_drag.unwrap_or(s.position);
         let duration = s.duration.max(position).max(0.1);
+        let slider = widget::slider(0.0..=duration, position, |v| Message::Player(PlayerMsg::SeekDrag(v)))
+            .step(0.5)
+            .on_release(msg(PlayerMsg::SeekRelease))
+            .width(Length::Fill);
+        // Its width (to turn the pointer's place into a time) and the
+        // pointer's place along it.
+        let slider = widget::mouse_area(
+            cosmic::iced::widget::sensor(slider)
+                .on_show(|size| Message::Player(PlayerMsg::SeekWidth(size.width)))
+                .on_resize(|size| Message::Player(PlayerMsg::SeekWidth(size.width))),
+        )
+        .on_move(|p| Message::Player(PlayerMsg::SeekHover(Some(p.x))))
+        .on_exit(msg(PlayerMsg::SeekHover(None)));
         let seek = widget::row::with_capacity(3)
-            .push(widget::text::body(clock(position)))
+            .push(widget::container(widget::text::body(clock(position))).width(Length::Fixed(TIME_W)))
+            .push(slider)
             .push(
-                widget::slider(0.0..=duration, position, |v| Message::Player(PlayerMsg::SeekDrag(v)))
-                    .step(0.5)
-                    .on_release(msg(PlayerMsg::SeekRelease))
-                    .width(Length::Fill),
+                widget::container(widget::text::body(format!("-{}", clock(duration - position))))
+                    .width(Length::Fixed(TIME_W))
+                    .align_right(Length::Fixed(TIME_W)),
             )
-            .push(widget::text::body(format!("-{}", clock(duration - position))))
-            .spacing(14)
+            .spacing(SEEK_SPACING)
             .align_y(Alignment::Center);
+
+        // The preview sits over the point it's for, kept inside the bar's
+        // row; the controls under it don't move when it comes and goes.
+        let preview = self.preview_time().map(|time| {
+            let bubble_w = self.playback.as_ref().and_then(|pb| pb.trickplay.as_ref()).map_or(90.0, |tp| tp.preview_size().0 + 12.0);
+            let at = TIME_W + SEEK_SPACING + (time / duration) as f32 * ui.seek_width;
+            let row_w = 2.0 * (TIME_W + SEEK_SPACING) + ui.seek_width;
+            let left = (at - bubble_w / 2.0).clamp(0.0, (row_w - bubble_w).max(0.0));
+            widget::row::with_capacity(2)
+                .push(widget::Space::new().width(Length::Fixed(left)).height(Length::Shrink))
+                .push(self.seek_preview(time))
+        });
 
         // Previous and next are for episodes; a movie has neither.
         let episodic = pb.is_some_and(|pb| pb.previous.is_some() || pb.next.is_some());
@@ -403,7 +586,7 @@ impl App {
             .push(extras)
             .align_y(Alignment::Center);
 
-        let bottom = widget::container(widget::column::with_capacity(2).push(seek).push(buttons).spacing(6))
+        let bottom = widget::container(widget::column::with_capacity(3).push_maybe(preview).push(seek).push(buttons).spacing(6))
             .padding([48, 24, 16, 24])
             .width(Length::Fill)
             .class(cosmic::theme::Container::custom(|t| crate::theme::player_fade(t, false)));

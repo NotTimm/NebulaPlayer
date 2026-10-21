@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 use cosmic::widget::image::Handle;
 use tokio::sync::Semaphore;
 
-use crate::jellyfin::{Account, ImageRef};
+use crate::jellyfin::{Account, ImageRef, TrickplayInfo};
 
 /// An image at one requested width.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -66,6 +66,59 @@ pub fn decode(bytes: &[u8]) -> Result<Picture, String> {
     let img = image::load_from_memory(bytes).map_err(|e| e.to_string())?.into_rgba8();
     let (width, height) = img.dimensions();
     Ok(Picture { handle: Handle::from_rgba(width, height, img.into_raw()), width, height })
+}
+
+/// One sheet of an item's trickplay thumbnails.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SheetKey {
+    pub item_id: String,
+    pub source_id: String,
+    /// The manifest is part of the key, so thumbnails the server made
+    /// again differently are fetched again.
+    pub info: TrickplayInfo,
+    pub index: u32,
+}
+
+/// A trickplay sheet, cut into its thumbnails: from the disk cache, or
+/// downloaded once (sharing the download limit with the posters).
+pub async fn load_sheet(account: Account, key: SheetKey) -> Result<Vec<Handle>, String> {
+    let path = {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        ("trickplay", &account.server_id, &key).hash(&mut h);
+        dir().join(format!("{:016x}", h.finish()))
+    };
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(_) => {
+            let _slot = slots().acquire().await.map_err(|e| e.to_string())?;
+            let b = crate::jellyfin::trickplay_sheet(&account, &key.item_id, &key.source_id, key.info.width, key.index).await?;
+            let _ = tokio::fs::create_dir_all(dir()).await;
+            let _ = tokio::fs::write(&path, &b).await;
+            b
+        }
+    };
+    tokio::task::spawn_blocking(move || cut_sheet(&bytes, &key.info, key.index))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Cuts a decoded sheet into its thumbnails, across then down.
+fn cut_sheet(bytes: &[u8], info: &TrickplayInfo, index: u32) -> Result<Vec<Handle>, String> {
+    let sheet = image::load_from_memory(bytes).map_err(|e| e.to_string())?.into_rgba8();
+    let (w, h) = (info.width, info.height);
+    let tiles = (0..info.tiles_on(index))
+        .map_while(|t| {
+            let (x, y) = ((t % info.tile_width) * w, (t / info.tile_width) * h);
+            (x + w <= sheet.width() && y + h <= sheet.height()).then(|| {
+                let tile = image::imageops::crop_imm(&sheet, x, y, w, h).to_image();
+                Handle::from_rgba(w, h, tile.into_raw())
+            })
+        })
+        .collect::<Vec<_>>();
+    if tiles.is_empty() {
+        return Err(format!("trickplay sheet {index} is smaller than its thumbnails"));
+    }
+    Ok(tiles)
 }
 
 /// Keeps the image cache under `limit` bytes, dropping the least recently

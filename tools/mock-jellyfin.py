@@ -240,6 +240,25 @@ def ensure_video():
         print("no test video (ffmpeg missing?):", e)
         return False
 
+# Trickplay, as a 10.9+ server makes it: a thumbnail a second here (the
+# test video is 20 s), 3 × 3 to a sheet so it takes three sheets.
+TRICKPLAY = {"Width": 320, "Height": 180, "TileWidth": 3, "TileHeight": 3, "ThumbnailCount": 20,
+             "Interval": 1000, "Bandwidth": 100000}
+CHAPTERS = [{"StartPositionTicks": 0, "Name": "Opening"}, {"StartPositionTicks": 10 * TICKS, "Name": "The Middle"}]
+
+def trickplay_sheet(index):
+    """Sheet `index` of the test video's thumbnails (made once), as JPEG."""
+    path = os.path.join(tempfile.gettempdir(), f"nebula-mock-trickplay-{index}.jpg")
+    if not os.path.exists(path) and ensure_video():
+        pattern = os.path.join(tempfile.gettempdir(), "nebula-mock-trickplay-%d.jpg")
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", VIDEO, "-vf",
+                        "fps=1,scale=320:180,tile=3x3", "-start_number", "0", pattern], check=False)
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError:
+        return None
+
 # ── HTTP ───────────────────────────────────────────────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
@@ -304,6 +323,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.stream_file(VIDEO)
         if not self.authed():
             return self.send({}, 401)
+        if len(parts) == 5 and parts[0] == "Videos" and parts[2] == "Trickplay" and parts[4].endswith(".jpg"):
+            sheet = trickplay_sheet(int(parts[4][:-4]))
+            if sheet is None:
+                return self.send({}, 404)
+            return self.send(sheet, ctype="image/jpeg")
 
         user = f"/Users/{USER_ID}"
         if p == f"{user}/Views":
@@ -341,7 +365,13 @@ class Handler(BaseHTTPRequestHandler):
             item = ITEMS.get(parts[3])
             if not item:
                 return self.send({}, 404)
-            return self.send(with_user_data(item))
+            out = with_user_data(item)
+            fields = q.get("fields", "")
+            if "Trickplay" in fields and item["Type"] in ("Movie", "Episode"):
+                out["Trickplay"] = {item["Id"]: {"320": TRICKPLAY}}
+            if "Chapters" in fields and item["Type"] in ("Movie", "Episode"):
+                out["Chapters"] = CHAPTERS
+            return self.send(out)
         if len(parts) == 3 and parts[0] == "Items" and parts[2] == "Similar":
             return self.send(page([m for m in MOVIES if m["Id"] != parts[1]]))
         if len(parts) == 3 and parts[0] == "Shows" and parts[2] == "Seasons":
