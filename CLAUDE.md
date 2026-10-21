@@ -48,7 +48,8 @@ Last updated 2026-10-21.
   paste. First full run (2026-10-21): all green except Windows (libmpv-2.dll
   imports vulkan-1.dll, missing without a GPU driver: the Vulkan loader now
   ships in `vulkan\`, loaded only when Windows has none) and flatpak
-  (1024px icon refused; left out). Both fixes untried in CI so far.
+  (1024px icon refused; left out). Run 39651963465 with both fixes: all
+  green. Signing was skipped there (secrets not visible to it yet).
 - COPR: spec + `.copr/Makefile` ready; the project isn't created yet
   (steps in docs/DEVELOPING.md). Signing uses the reader's key if the
   owner adds MINISIGN_KEY/MINISIGN_PASSWORD to this repo.
