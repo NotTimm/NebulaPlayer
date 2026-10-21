@@ -49,35 +49,3 @@ zune-jpeg.opt-level = 3
 png.opt-level = 3
 image-webp.opt-level = 3
 image.opt-level = 3
-
-# `cargo deb` (Debian/Ubuntu). libmpv is loaded at run time, so it's
-# declared here rather than found by linking.
-[package.metadata.deb]
-name = "nebula-player"
-maintainer = "Tim Singel <gamer.tdogtim@gmail.com>"
-section = "video"
-depends = "$auto, libmpv2 | libmpv1"
-extended-description = "A fast, native Jellyfin and local video player built on libcosmic and mpv."
-assets = [
-    ["target/release/nebula-player", "usr/bin/", "755"],
-    ["res/io.github.NotTimm.NebulaPlayer.desktop", "usr/share/applications/", "644"],
-    ["res/io.github.NotTimm.NebulaPlayer.metainfo.xml", "usr/share/metainfo/", "644"],
-    ["res/io.github.NotTimm.NebulaPlayer.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
-    ["README.md", "usr/share/doc/nebula-player/", "644"],
-]
-
-# `cargo generate-rpm` (Fedora).
-[package.metadata.generate-rpm]
-name = "nebula-player"
-summary = "Native Jellyfin and local video player"
-assets = [
-    { source = "target/release/nebula-player", dest = "/usr/bin/nebula-player", mode = "755" },
-    { source = "res/io.github.NotTimm.NebulaPlayer.desktop", dest = "/usr/share/applications/io.github.NotTimm.NebulaPlayer.desktop", mode = "644" },
-    { source = "res/io.github.NotTimm.NebulaPlayer.metainfo.xml", dest = "/usr/share/metainfo/io.github.NotTimm.NebulaPlayer.metainfo.xml", mode = "644" },
-    { source = "res/io.github.NotTimm.NebulaPlayer.svg", dest = "/usr/share/icons/hicolor/scalable/apps/io.github.NotTimm.NebulaPlayer.svg", mode = "644" },
-    { source = "README.md", dest = "/usr/share/doc/nebula-player/README.md", mode = "644", doc = true },
-]
-auto-req = "auto"
-
-[package.metadata.generate-rpm.requires]
-mpv-libs = "*"
