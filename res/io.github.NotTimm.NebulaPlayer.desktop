@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Nebula Player
+GenericName=Video Player
+Comment=Watch your Jellyfin library and your own videos
+Exec=nebula-player %f
+Icon=io.github.NotTimm.NebulaPlayer
+Terminal=false
+Categories=AudioVideo;Video;Player;TV;
+Keywords=jellyfin;video;movies;tv;shows;mpv;player;
+MimeType=video/x-matroska;video/mp4;video/x-m4v;video/webm;video/quicktime;video/x-msvideo;video/x-ms-wmv;video/x-flv;video/mpeg;video/mp2t;video/ogg;video/3gpp;
+StartupWMClass=io.github.NotTimm.NebulaPlayer

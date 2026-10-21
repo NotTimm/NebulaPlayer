@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.NotTimm.NebulaPlayer</id>
+  <name>Nebula Player</name>
+  <summary>Watch your Jellyfin library and your own videos</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <developer id="io.github.nottimm">
+    <name>Tim Singel</name>
+  </developer>
+  <description>
+    <p>
+      A fast, native video player for Jellyfin servers and local files.
+      Browse your libraries the way Jellyfin's web client lays them out
+      (Continue Watching, Next Up, Recently Added, seasons and episodes),
+      and play everything in mpv, with hardware decoding and your
+      progress kept in sync with the server.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.NotTimm.NebulaPlayer.desktop</launchable>
+  <url type="homepage">https://github.com/NotTimm/NebulaPlayer</url>
+  <url type="bugtracker">https://github.com/NotTimm/NebulaPlayer/issues</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0-alpha.1" date="2026-10-21" type="development"/>
+  </releases>
+</component>
