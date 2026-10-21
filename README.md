@@ -17,25 +17,28 @@ rendering and audio passthrough.
   date or rating.
 - **Movie and show pages** with the backdrop, details, cast, seasons,
   episodes and similar titles. You can mark things watched or favorite them.
-- **Search** across movies, shows and episodes.
-- **Playback in mpv**: resumes where you left off, picks your Jellyfin
-  audio and subtitle preferences, loads external subtitles, plays the
-  next episode, and reports progress back so other Jellyfin apps stay in
-  sync.
+- **Search** across movies, shows and episodes, and within a library,
+  which also has an A–Z bar to jump through it.
+- **Playback inside the app**, drawn by mpv, under controls like
+  Jellyfin Media Player's: seek bar with trickplay thumbnail previews and
+  chapters, back 10 s / forward 30 s, previous/next episode, volume,
+  audio, subtitle and speed menus, full screen, and Jellyfin's keys. It
+  resumes where you left off, picks your Jellyfin audio and subtitle
+  preferences, loads external subtitles, plays the next episode, and
+  reports progress back so other Jellyfin apps stay in sync.
 - **Skip intros and credits** found by the
   [Intro Skipper](https://github.com/intro-skipper/intro-skipper) plugin
-  (or anything else that fills in Jellyfin's media segments): mpv asks
-  "Skip Intro: press S or Enter", or skips by itself if you prefer.
+  (or anything else that fills in Jellyfin's media segments): a Skip
+  Intro button (or S / Enter), or skipping by itself if you prefer.
   Recaps, previews and ads are covered too.
 - **Local files**: add folders and play anything in them. There's no
   scraping; metadata comes from Jellyfin only.
-- Jellyfin's dark look and blue-purple accent by default, or your
-  desktop's COSMIC theme.
+- Jellyfin's dark look with your desktop's accent colour (or Jellyfin's
+  blue), or your desktop's COSMIC theme.
 
-mpv opens in its own window for now; drawing the video inside the app
-window comes later. mpv's usual keys work (Space, arrows, `f` for full
-screen, `j`/`#` for subtitle/audio tracks, `q` to close). Your own
-`mpv.conf` and `input.conf` go in the folder the settings open.
+To use mpv's own window instead, with mpv's own controls and keys, turn
+on "Play in mpv's own window" in the settings (on macOS it's always mpv's
+window). Your own `mpv.conf` goes in the folder the settings open.
 
 ## Installing
 

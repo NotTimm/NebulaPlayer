@@ -8,7 +8,7 @@
 %bcond check 1
 
 Name:           nebula-player
-Version:        0.1.0~alpha.1
+Version:        0.1.0~alpha.2
 Release:        1%{?dist}
 Summary:        Native Jellyfin and local video player
 
@@ -114,5 +114,9 @@ appstream-util validate-relax --nonet %{buildroot}%{_metainfodir}/%{app_id}.meta
 %{_datadir}/icons/hicolor/*/apps/%{app_id}.*
 
 %changelog
+* Wed Oct 21 2026 Tim Singel <gamer.tdogtim@gmail.com> - 0.1.0~alpha.2-1
+- Video inside the app with Jellyfin-style controls, trickplay previews,
+  library A-Z bar and search, smoother scrolling, desktop accent colour
+
 * Wed Oct 21 2026 Tim Singel <gamer.tdogtim@gmail.com> - 0.1.0~alpha.1-1
 - First Fedora spec
