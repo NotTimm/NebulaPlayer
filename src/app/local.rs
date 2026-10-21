@@ -123,7 +123,7 @@ impl App {
                     .on_press(Message::RemoveFolder(i)),
             );
         }
-        widget::scrollable(col).height(Length::Fill).into()
+        super::widgets::page_scroll(col)
     }
 }
 

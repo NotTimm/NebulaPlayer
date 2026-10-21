@@ -203,12 +203,21 @@ impl App {
         let role = p.role.clone().filter(|r| !r.is_empty()).or_else(|| p.kind.clone()).unwrap_or_default();
         widget::column::with_capacity(3)
             .push(picture(key.as_ref().and_then(|k| self.image(k)), w, h, "avatar-default-symbolic"))
-            .push(widget::text::body(truncate(&p.name, 16)))
+            .push(widget::text::body(truncate(&p.name, 14)))
             .push(widget::text::caption(truncate(&role, 18)))
             .spacing(4)
             .width(Length::Fixed(w))
             .into()
     }
+}
+
+/// A page's content, scrolling up and down; reports how far down it is.
+pub fn page_scroll<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    widget::scrollable(content)
+        .id(super::page_scroll_id())
+        .height(Length::Fill)
+        .on_scroll(|v| Message::Scrolled(v.relative_offset().y))
+        .into()
 }
 
 /// A titled row of cards that scrolls sideways.

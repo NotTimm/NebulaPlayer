@@ -212,6 +212,7 @@ pub enum Message {
     ToggleFavorite(Item),
     UserDataSaved(Result<(), String>),
     Back,
+    Scrolled(f32),
     SearchInput(String),
     SearchSubmit,
     SearchResults(String, Result<Vec<Item>, String>),
@@ -251,7 +252,12 @@ pub struct App {
     account: Option<Account>,
     nav: nav_bar::Model,
     page: Page,
-    back: Vec<Page>,
+    /// Pages under the current one, with how far down each was scrolled.
+    back: Vec<(Page, f32)>,
+    /// How far down the current page is scrolled (0–1).
+    scroll_y: f32,
+    /// Where to scroll the new page to, once this message is handled.
+    snap: Option<f32>,
     home: Home,
     search: SearchState,
     signin: SignIn,
@@ -262,6 +268,11 @@ pub struct App {
     player: Option<mpv::Player>,
     playback: Option<Playback>,
     error: Option<String>,
+}
+
+/// The scrollable every page's content sits in.
+pub fn page_scroll_id() -> widget::Id {
+    widget::Id::new("page-scroll")
 }
 
 pub(crate) fn tip<'a>(el: impl Into<Element<'a, Message>>, hint: impl Into<Cow<'a, str>>) -> Element<'a, Message> {
@@ -332,7 +343,7 @@ impl App {
     /// Highlights the sidebar entry for the page the user is on (the
     /// bottom of the stack, where the sidebar took them).
     fn select_nav(&mut self) {
-        let root = self.back.first().unwrap_or(&self.page);
+        let root = self.back.first().map(|(p, _)| p).unwrap_or(&self.page);
         let wanted = |t: &NavTarget| match (t, root) {
             (NavTarget::Home, Page::Home) => true,
             (NavTarget::Search, Page::Search) => true,
@@ -350,14 +361,36 @@ impl App {
     fn push(&mut self, page: Page) {
         let old = std::mem::replace(&mut self.page, page);
         if !matches!(old, Page::SignIn) {
-            self.back.push(old);
+            self.back.push((old, self.scroll_y));
         }
+        self.scroll_to(0.0);
     }
 
     /// Opens a sidebar page: a fresh stack.
     fn go(&mut self, page: Page) {
         self.back.clear();
         self.page = page;
+        self.scroll_to(0.0);
+    }
+
+    /// Every page scrolls in the same widget, so a new page starts where
+    /// the last one was unless told otherwise.
+    fn scroll_to(&mut self, y: f32) {
+        self.scroll_y = y;
+        self.snap = Some(y);
+    }
+
+    fn with_snap(&mut self, task: Task<Message>) -> Task<Message> {
+        match self.snap.take() {
+            Some(y) => Task::batch([
+                task,
+                cosmic::iced::widget::scrollable::snap_to(
+                    page_scroll_id(),
+                    cosmic::iced::widget::scrollable::RelativeOffset { x: None, y: Some(y) },
+                ),
+            ]),
+            None => task,
+        }
     }
 
     fn open_item(&mut self, item: Item) -> Task<Message> {
@@ -441,6 +474,7 @@ impl App {
         self.account = account;
         self.home = Home::default();
         self.back.clear();
+        self.scroll_to(0.0);
         self.images.clear();
         self.images_pending.clear();
         self.rebuild_nav();
@@ -607,7 +641,15 @@ impl App {
         }
 
         if pb.started || pb.remote.is_none() {
-            match state.ended {
+            // mpv can report an error at the end of a file it played all
+            // the way through (an audio device that failed to open, say):
+            // that still counts as watched.
+            let played_out = state.duration > 0.0 && pb.position >= state.duration - 3.0;
+            let ended = match state.ended {
+                Some(mpv::End::Error) if played_out => Some(mpv::End::Eof),
+                e => e,
+            };
+            match ended {
                 Some(mpv::End::Eof) if !pb.finished && state.loaded > pb.loaded_before => {
                     pb.finished = true;
                     // Played to the end: report the end, so it's marked watched.
@@ -758,6 +800,8 @@ impl Application for App {
             nav: nav_bar::Model::default(),
             page: Page::Home,
             back: Vec::new(),
+            scroll_y: 0.0,
+            snap: None,
             home: Home::default(),
             search: SearchState::default(),
             signin: SignIn::default(),
@@ -791,7 +835,7 @@ impl Application for App {
 
     fn on_nav_select(&mut self, id: nav_bar::Id) -> Task<Self::Message> {
         self.nav.activate(id);
-        match self.nav.data::<NavTarget>(id).cloned() {
+        let task = match self.nav.data::<NavTarget>(id).cloned() {
             Some(NavTarget::Home) => {
                 self.go(Page::Home);
                 self.refresh_home()
@@ -806,7 +850,8 @@ impl Application for App {
                 self.scan_local()
             }
             None => Task::none(),
-        }
+        };
+        self.with_snap(task)
     }
 
     fn on_escape(&mut self) -> Task<Self::Message> {
@@ -868,7 +913,37 @@ impl Application for App {
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
+        let task = self.handle(message);
+        self.with_snap(task)
+    }
+
+    fn view(&self) -> Element<'_, Self::Message> {
+        let body = match &self.page {
+            Page::SignIn => self.view_signin(),
+            Page::Home => self.view_home(),
+            Page::Library(lib) => self.view_library(lib),
+            Page::Details(d) => self.view_details(d),
+            Page::Search => self.view_search(),
+            Page::Local => self.view_local(),
+        };
+        let mut col = widget::column::with_capacity(2);
+        if let Some(err) = &self.error {
+            col = col.push(widgets::error_banner(err));
+        }
+        col.push(body).width(Length::Fill).height(Length::Fill).into()
+    }
+}
+
+impl App {
+    fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::Scrolled(y) => {
+                self.scroll_y = y;
+                // Near the bottom of a library, its next page loads.
+                if y > 0.85 && matches!(self.page, Page::Library(_)) {
+                    return self.handle(Message::LibraryMore);
+                }
+            }
             // ── Sign-in ──────────────────────────────────────────────────────
             Message::ServerInput(s) => self.signin.server = s,
             Message::Connect => {
@@ -1169,8 +1244,9 @@ impl Application for App {
                 return self.refresh_details();
             }
             Message::Back => {
-                if let Some(page) = self.back.pop() {
+                if let Some((page, y)) = self.back.pop() {
                     self.page = page;
+                    self.scroll_to(y);
                     if matches!(self.page, Page::Home) {
                         return self.refresh_home();
                     }
@@ -1340,21 +1416,6 @@ impl Application for App {
         Task::none()
     }
 
-    fn view(&self) -> Element<'_, Self::Message> {
-        let body = match &self.page {
-            Page::SignIn => self.view_signin(),
-            Page::Home => self.view_home(),
-            Page::Library(lib) => self.view_library(lib),
-            Page::Details(d) => self.view_details(d),
-            Page::Search => self.view_search(),
-            Page::Local => self.view_local(),
-        };
-        let mut col = widget::column::with_capacity(2);
-        if let Some(err) = &self.error {
-            col = col.push(widgets::error_banner(err));
-        }
-        col.push(body).width(Length::Fill).height(Length::Fill).into()
-    }
 }
 
 impl Drop for App {

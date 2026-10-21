@@ -43,7 +43,7 @@ impl App {
             body = body.push(widget::text::caption("Loading…"));
         }
         col = col.push(body);
-        widget::scrollable(col).height(Length::Fill).into()
+        widgets::page_scroll(col)
     }
 
     /// The backdrop, fading into the page.
@@ -123,7 +123,7 @@ impl App {
         }
         let watched = item.played();
         buttons = buttons.push(super::tip(
-            widget::button::icon(icon::from_name(if watched { "object-select-symbolic" } else { "emblem-default-symbolic" }))
+            widget::button::icon(icon::from_name("object-select-symbolic"))
                 .selected(watched)
                 .on_press(Message::TogglePlayed(item.clone())),
             if watched { "Watched (click to unmark)" } else { "Mark watched" },
@@ -225,7 +225,7 @@ impl App {
 
         let watched = ep.played();
         let tick = super::tip(
-            widget::button::icon(icon::from_name(if watched { "object-select-symbolic" } else { "emblem-default-symbolic" }))
+            widget::button::icon(icon::from_name("object-select-symbolic"))
                 .selected(watched)
                 .on_press(Message::TogglePlayed(ep.clone())),
             if watched { "Watched" } else { "Mark watched" },

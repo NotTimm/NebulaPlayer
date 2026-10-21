@@ -39,6 +39,6 @@ impl App {
         if !s.searched.is_empty() && s.results.is_empty() && !s.loading {
             col = col.push(widget::text::body(format!("Nothing found for “{}”.", s.searched)));
         }
-        widget::scrollable(col).height(Length::Fill).into()
+        super::widgets::page_scroll(col)
     }
 }

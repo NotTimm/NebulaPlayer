@@ -38,16 +38,6 @@ impl App {
         if lib.loading {
             col = col.push(widget::text::caption("Loading…"));
         }
-        // Near the bottom, the next page loads.
-        widget::scrollable(col)
-            .height(Length::Fill)
-            .on_scroll(|v| {
-                if v.relative_offset().y > 0.85 {
-                    Message::LibraryMore
-                } else {
-                    Message::Cancelled
-                }
-            })
-            .into()
+        super::widgets::page_scroll(col)
     }
 }

@@ -54,7 +54,7 @@ impl App {
             ));
         }
         col = col.push(rows);
-        widget::scrollable(col).height(Length::Fill).into()
+        widgets::page_scroll(col)
     }
 
     /// The featured banner (what the Media Bar plugin does in Jellyfin's

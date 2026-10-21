@@ -333,6 +333,9 @@ fn event_loop(shared: Arc<Shared>) {
         // SAFETY: the handle lives as long as `shared`; the event is valid
         // until the next wait_event on this thread.
         let ev = unsafe { &*mpv_wait_event(h, -1.0) };
+        if ev.event_id != EVENT_PROPERTY_CHANGE {
+            log::debug!("mpv event {}", ev.event_id);
+        }
         match ev.event_id {
             EVENT_SHUTDOWN => {
                 shared.state.lock().unwrap().closed = true;
