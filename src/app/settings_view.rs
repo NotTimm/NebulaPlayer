@@ -69,7 +69,7 @@ impl App {
 
         let about = widget::settings::section().title("About").add(widget::settings::item_row(vec![
             widget::text::caption(match crate::mpv::api_version() {
-                Some(v) => format!("Nebula Player {} · libmpv API {v}", env!("CARGO_PKG_VERSION")),
+                Some(v) => format!("Nebula Player {} · {v}", env!("CARGO_PKG_VERSION")),
                 None => format!("Nebula Player {} · {}", env!("CARGO_PKG_VERSION"), crate::mpv::INSTALL_HINT),
             })
             .into(),

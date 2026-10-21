@@ -61,6 +61,9 @@ Last updated 2026-10-21.
 - Intro Skipper: media segments (10.10+) or the old plugin endpoint;
   mpv OSD prompt "Skip Intro: press S or Enter" (setting: ask / auto /
   off). Tested against the mock in both server modes.
+- macOS plays through the mpv program over JSON IPC (`mpv::ipc`), since
+  libmpv can't own a window there; `NEBULA_MPV=ipc` tests it on Linux
+  (seen working: prompt, skip, reports, next episode).
 - libmpv is loaded at run time (libloading), not linked; the Windows zip
   ships `libmpv-2.dll`. A file given on the command line plays only once
   the window has opened (starting mpv's renderer while the app's was

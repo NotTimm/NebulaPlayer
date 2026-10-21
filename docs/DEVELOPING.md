@@ -43,9 +43,14 @@ python3 tools/mock-jellyfin.py 8096
 
 ## How it's put together
 
-- `src/mpv.rs`: a small binding to libmpv's client API (only the calls
-  needed, present since libmpv 1.x, loaded at run time) and the
-  `Player`. mpv owns its own
+- `src/mpv.rs`: the `Player`, over one of two backends. On Linux and
+  Windows it's libmpv in-process: a small binding to the client API (only
+  the calls needed, present since libmpv 1.x, loaded at run time). On
+  macOS libmpv can't open its own window, because Cocoa wants the main
+  thread, which the app owns. So there the app runs the mpv program and
+  drives it over `--input-ipc-server` (JSON lines). Both take the same
+  commands and options; `NEBULA_MPV=ipc` uses the IPC backend anywhere,
+  for testing, and `NEBULA_MPV_BIN` picks the mpv program. mpv owns its own
   window and on-screen controller; an event thread keeps a `State`
   that the UI polls twice a second.
 - `src/jellyfin.rs`: the API client (sign-in, home sections, browsing,

@@ -101,7 +101,7 @@ pub const INSTALL_HINT: &str =
 #[cfg(windows)]
 pub const INSTALL_HINT: &str = "libmpv-2.dll is missing: it belongs next to nebula-player.exe. Reinstalling Nebula Player puts it back.";
 #[cfg(target_os = "macos")]
-pub const INSTALL_HINT: &str = "Install libmpv to play videos: \"brew install mpv\".";
+pub const INSTALL_HINT: &str = "Install mpv to play videos: \"brew install mpv\".";
 
 fn load() -> Result<Api, String> {
     let mut last = String::new();
@@ -161,12 +161,16 @@ fn cstr(s: &str) -> CString {
     CString::new(s.replace('\0', "")).unwrap_or_default()
 }
 
-/// libmpv's client API version as "major.minor", for the About page.
+/// Which mpv plays videos, for the About page: libmpv's client API
+/// version, or that it's the mpv program.
 pub fn api_version() -> Option<String> {
+    if use_ipc() {
+        return Some("mpv program over IPC".into());
+    }
     let api = api().ok()?;
     // SAFETY: a plain getter with no arguments.
     let v = unsafe { (api.client_api_version)() } as u64;
-    Some(format!("{}.{}", v >> 16, v & 0xffff))
+    Some(format!("libmpv API {}.{}", v >> 16, v & 0xffff))
 }
 
 /// The mpv handle. mpv's client API is thread-safe, so it's shared between
@@ -295,11 +299,93 @@ pub struct Options {
     pub watch_later_dir: std::path::PathBuf,
 }
 
+/// Talks to one mpv: through libmpv in this process, or (on macOS, where
+/// libmpv can't open its own window) to the mpv program over its JSON IPC
+/// socket. Both take mpv's input commands and option strings.
+trait Backend: Send + Sync {
+    fn command(&self, args: &[&str]) -> Result<(), String>;
+    /// Sets an option or property from its string form.
+    fn set(&self, name: &str, value: &str) -> Result<(), String>;
+}
+
+impl Backend for Handle {
+    fn command(&self, args: &[&str]) -> Result<(), String> {
+        Handle::command(self, args)
+    }
+
+    fn set(&self, name: &str, value: &str) -> Result<(), String> {
+        self.set_property(name, value)
+    }
+}
+
+/// What happened in mpv, from either backend.
+#[derive(Debug, PartialEq)]
+enum Event {
+    Shutdown,
+    StartFile,
+    FileLoaded,
+    EndFile(End, Option<String>),
+    Position(f64),
+    Duration(f64),
+    Paused(bool),
+    Message(Vec<String>),
+}
+
 struct Shared {
-    handle: Handle,
+    backend: Box<dyn Backend>,
     state: Mutex<State>,
     /// Subtitles for the file being loaded, added on FILE_LOADED.
     pending_subs: Mutex<Vec<ExternalSub>>,
+}
+
+impl Shared {
+    fn new(backend: Box<dyn Backend>) -> Arc<Self> {
+        Arc::new(Shared { backend, state: Mutex::new(State::default()), pending_subs: Mutex::new(Vec::new()) })
+    }
+
+    /// Updates the state for one event; false once mpv has shut down.
+    fn handle(&self, event: Event) -> bool {
+        match event {
+            Event::Shutdown => {
+                self.state.lock().unwrap().closed = true;
+                return false;
+            }
+            Event::StartFile => {
+                let mut s = self.state.lock().unwrap();
+                s.position = 0.0;
+                s.duration = 0.0;
+                s.error = None;
+            }
+            Event::FileLoaded => {
+                let subs = std::mem::take(&mut *self.pending_subs.lock().unwrap());
+                for sub in subs {
+                    let flag = if sub.select { "select" } else { "auto" };
+                    if let Err(e) = self.backend.command(&["sub-add", &sub.url, flag, &sub.title, &sub.lang]) {
+                        log::warn!("{e}");
+                    }
+                }
+                let mut s = self.state.lock().unwrap();
+                s.ended = None;
+                s.loaded += 1;
+            }
+            Event::EndFile(reason, error) => {
+                let mut s = self.state.lock().unwrap();
+                if reason == End::Error {
+                    s.error = error;
+                }
+                s.ended = Some(reason);
+            }
+            Event::Position(p) => self.state.lock().unwrap().position = p,
+            Event::Duration(d) => self.state.lock().unwrap().duration = d,
+            Event::Paused(p) => self.state.lock().unwrap().paused = p,
+            Event::Message(args) => {
+                if args.first().map(String::as_str) == Some(SKIP_MESSAGE) {
+                    self.state.lock().unwrap().skip_presses += 1;
+                }
+            }
+        }
+        true
+    }
 }
 
 /// One mpv instance and its window. Dropping it closes the window.
@@ -318,8 +404,52 @@ const OBS_TIME: u64 = 1;
 const OBS_DURATION: u64 = 2;
 const OBS_PAUSE: u64 = 3;
 
+/// mpv's options for this app. The user's own mpv.conf (read from
+/// `config_dir`) overrides them. The last flag marks options only libmpv
+/// gets: the mpv program refuses to start on one it doesn't know.
+fn options(opts: &Options) -> Vec<(&'static str, String, bool)> {
+    let o = |k: &'static str, v: &str| (k, v.to_string(), false);
+    vec![
+        o("config-dir", &opts.config_dir.to_string_lossy()),
+        o("config", "yes"),
+        o("terminal", "no"),
+        o("input-default-bindings", "yes"),
+        o("input-vo-keyboard", "yes"),
+        o("osc", "yes"),
+        o("force-window", "yes"),
+        // Stay open between files, so the next episode plays in the same
+        // window; the app quits it when nothing follows.
+        o("idle", "yes"),
+        o("keep-open", "no"),
+        o("ytdl", "no"),
+        o("hwdec", if opts.hwdec { "auto-safe" } else { "no" }),
+        o("fullscreen", if opts.fullscreen { "yes" } else { "no" }),
+        o("title", "${media-title} — Nebula"),
+        o("watch-later-directory", &opts.watch_later_dir.to_string_lossy()),
+        o("autofit-larger", "90%x90%"),
+        o("cursor-autohide", "1000"),
+        ("wayland-app-id", crate::APP_ID.to_string(), true),
+        ("x11-name", crate::APP_ID.to_string(), true),
+    ]
+}
+
+/// Whether mpv runs as its own program (macOS, or `NEBULA_MPV=ipc`).
+fn use_ipc() -> bool {
+    cfg!(target_os = "macos") || std::env::var("NEBULA_MPV").is_ok_and(|v| v == "ipc")
+}
+
 impl Player {
     pub fn new(opts: &Options) -> Result<Self, String> {
+        let _ = std::fs::create_dir_all(&opts.config_dir);
+        let _ = std::fs::create_dir_all(&opts.watch_later_dir);
+        #[cfg(unix)]
+        if use_ipc() {
+            return ipc::start(opts).map(|shared| Player { shared });
+        }
+        Self::new_libmpv(opts)
+    }
+
+    fn new_libmpv(opts: &Options) -> Result<Self, String> {
         let api = api()?;
         // SAFETY: plain constructor; NULL means out of memory or a bad locale.
         let raw = unsafe { (api.create)() };
@@ -327,36 +457,9 @@ impl Player {
             return Err("couldn't start mpv".into());
         }
         let handle = Handle(raw);
-
-        let _ = std::fs::create_dir_all(&opts.config_dir);
-        let _ = std::fs::create_dir_all(&opts.watch_later_dir);
-        // The user's own mpv.conf for this app is read from config_dir;
-        // these are the defaults it can override.
-        let defaults: &[(&str, &str)] = &[
-            ("config-dir", &opts.config_dir.to_string_lossy()),
-            ("config", "yes"),
-            ("terminal", "no"),
-            ("input-default-bindings", "yes"),
-            ("input-vo-keyboard", "yes"),
-            ("osc", "yes"),
-            ("force-window", "yes"),
-            // Stay open between files, so the next episode plays in the
-            // same window; the app quits it when nothing follows.
-            ("idle", "yes"),
-            ("keep-open", "no"),
-            ("ytdl", "no"),
-            ("hwdec", if opts.hwdec { "auto-safe" } else { "no" }),
-            ("fullscreen", if opts.fullscreen { "yes" } else { "no" }),
-            ("title", "${media-title} — Nebula"),
-            ("watch-later-directory", &opts.watch_later_dir.to_string_lossy()),
-            ("autofit-larger", "90%x90%"),
-            ("cursor-autohide", "1000"),
-            ("wayland-app-id", crate::APP_ID),
-            ("x11-name", crate::APP_ID),
-        ];
-        for (k, v) in defaults {
+        for (k, v, _) in options(opts) {
             // Options an older mpv doesn't know (wayland-app-id) are skipped.
-            if let Err(e) = handle.set_option(k, v) {
+            if let Err(e) = handle.set_option(k, &v) {
                 log::debug!("{e}");
             }
         }
@@ -369,37 +472,34 @@ impl Player {
         handle.observe(OBS_DURATION, "duration", FORMAT_DOUBLE);
         handle.observe(OBS_PAUSE, "pause", FORMAT_FLAG);
 
-        let shared = Arc::new(Shared {
-            handle,
-            state: Mutex::new(State::default()),
-            pending_subs: Mutex::new(Vec::new()),
-        });
+        let raw = RawHandle(handle.0);
+        let shared = Shared::new(Box::new(handle));
         let events = shared.clone();
         std::thread::Builder::new()
             .name("mpv-events".into())
-            .spawn(move || event_loop(events))
+            .spawn(move || event_loop(events, raw))
             .map_err(|e| e.to_string())?;
         Ok(Player { shared })
     }
 
     /// Starts playing `load`, replacing whatever was playing.
     pub fn load(&self, load: &Load) -> Result<(), String> {
-        let h = &self.shared.handle;
+        let b = &self.shared.backend;
         let start = load.start.filter(|s| *s > 1.0).map(|s| format!("{s:.3}"));
-        h.set_property("start", start.as_deref().unwrap_or("none"))?;
-        h.set_property("force-media-title", &load.title)?;
-        h.set_property("http-header-fields", &load.headers.join(","))?;
-        h.set_property("save-position-on-quit", if load.remember_position { "yes" } else { "no" })?;
-        h.set_property("aid", &load.audio.map(|a| a.to_string()).unwrap_or_else(|| "auto".into()))?;
+        b.set("start", start.as_deref().unwrap_or("none"))?;
+        b.set("force-media-title", &load.title)?;
+        b.set("http-header-fields", &load.headers.join(","))?;
+        b.set("save-position-on-quit", if load.remember_position { "yes" } else { "no" })?;
+        b.set("aid", &load.audio.map(|a| a.to_string()).unwrap_or_else(|| "auto".into()))?;
         let sid = match load.subtitle {
             Some(0) => "no".to_string(),
             Some(s) => s.to_string(),
             None => "auto".to_string(),
         };
-        h.set_property("sid", &sid)?;
+        b.set("sid", &sid)?;
         *self.shared.pending_subs.lock().unwrap() = load.external_subs.clone();
-        h.command(&["loadfile", &load.url, "replace"])?;
-        h.set_property("pause", "no")
+        b.command(&["loadfile", &load.url, "replace"])?;
+        b.set("pause", "no")
     }
 
     pub fn state(&self) -> State {
@@ -408,23 +508,23 @@ impl Player {
 
     /// Jumps to `seconds` into the file.
     pub fn seek(&self, seconds: f64) {
-        let _ = self.shared.handle.command(&["seek", &format!("{seconds:.3}"), "absolute"]);
+        let _ = self.shared.backend.command(&["seek", &format!("{seconds:.3}"), "absolute"]);
     }
 
     /// A message on mpv's on-screen display; an empty one clears it.
     pub fn show_text(&self, text: &str, millis: u32) {
-        let _ = self.shared.handle.command(&["show-text", text, &millis.to_string()]);
+        let _ = self.shared.backend.command(&["show-text", text, &millis.to_string()]);
     }
 
     /// Binds S and Enter to "skip" while a skip prompt is up, and back to
     /// whatever they were (S takes screenshots) when it's gone.
     pub fn skip_keys(&self, on: bool) {
-        let h = &self.shared.handle;
+        let b = &self.shared.backend;
         let result = if on {
-            h.command(&["define-section", SKIP_SECTION, SKIP_BINDINGS, "force"])
-                .and_then(|_| h.command(&["enable-section", SKIP_SECTION]))
+            b.command(&["define-section", SKIP_SECTION, SKIP_BINDINGS, "force"])
+                .and_then(|_| b.command(&["enable-section", SKIP_SECTION]))
         } else {
-            h.command(&["disable-section", SKIP_SECTION])
+            b.command(&["disable-section", SKIP_SECTION])
         };
         if let Err(e) = result {
             log::warn!("{e}");
@@ -433,7 +533,7 @@ impl Player {
 
     /// Closes the window and ends the player.
     pub fn quit(&self) {
-        let _ = self.shared.handle.command(&["quit"]);
+        let _ = self.shared.backend.command(&["quit"]);
     }
 }
 
@@ -445,39 +545,25 @@ impl Drop for Player {
     }
 }
 
-fn event_loop(shared: Arc<Shared>) {
-    let h = shared.handle.0;
+/// The libmpv handle for the event thread, which `Shared` keeps alive.
+struct RawHandle(*mut MpvHandle);
+
+// SAFETY: see `Handle`.
+unsafe impl Send for RawHandle {}
+
+fn event_loop(shared: Arc<Shared>, h: RawHandle) {
     let wait_event = loaded().wait_event;
     loop {
         // SAFETY: the handle lives as long as `shared`; the event is valid
         // until the next wait_event on this thread.
-        let ev = unsafe { &*wait_event(h, -1.0) };
+        let ev = unsafe { &*wait_event(h.0, -1.0) };
         if ev.event_id != EVENT_PROPERTY_CHANGE {
             log::debug!("mpv event {}", ev.event_id);
         }
-        match ev.event_id {
-            EVENT_SHUTDOWN => {
-                shared.state.lock().unwrap().closed = true;
-                return;
-            }
-            EVENT_START_FILE => {
-                let mut s = shared.state.lock().unwrap();
-                s.position = 0.0;
-                s.duration = 0.0;
-                s.error = None;
-            }
-            EVENT_FILE_LOADED => {
-                let subs = std::mem::take(&mut *shared.pending_subs.lock().unwrap());
-                for sub in subs {
-                    let flag = if sub.select { "select" } else { "auto" };
-                    if let Err(e) = shared.handle.command(&["sub-add", &sub.url, flag, &sub.title, &sub.lang]) {
-                        log::warn!("{e}");
-                    }
-                }
-                let mut s = shared.state.lock().unwrap();
-                s.ended = None;
-                s.loaded += 1;
-            }
+        let event = match ev.event_id {
+            EVENT_SHUTDOWN => Event::Shutdown,
+            EVENT_START_FILE => Event::StartFile,
+            EVENT_FILE_LOADED => Event::FileLoaded,
             EVENT_END_FILE if !ev.data.is_null() => {
                 // SAFETY: END_FILE events carry an mpv_event_end_file.
                 let end = unsafe { &*(ev.data as *const MpvEventEndFile) };
@@ -487,38 +573,203 @@ fn event_loop(shared: Arc<Shared>) {
                     END_STOP | END_QUIT => End::Stopped,
                     _ => End::Stopped,
                 };
-                let mut s = shared.state.lock().unwrap();
-                if reason == End::Error {
-                    s.error = Some(error_string(end.error));
-                }
-                s.ended = Some(reason);
+                Event::EndFile(reason, (reason == End::Error).then(|| error_string(end.error)))
             }
             EVENT_CLIENT_MESSAGE if !ev.data.is_null() => {
                 // SAFETY: CLIENT_MESSAGE events carry num_args C strings.
                 let msg = unsafe { &*(ev.data as *const MpvEventClientMessage) };
-                let first = (msg.num_args > 0 && !msg.args.is_null())
-                    .then(|| unsafe { *msg.args })
-                    .filter(|a| !a.is_null())
-                    .map(|a| unsafe { CStr::from_ptr(a) }.to_string_lossy().into_owned());
-                if first.as_deref() == Some(SKIP_MESSAGE) {
-                    shared.state.lock().unwrap().skip_presses += 1;
-                }
+                let args = if msg.num_args > 0 && !msg.args.is_null() {
+                    (0..msg.num_args as usize)
+                        .filter_map(|i| {
+                            let a = unsafe { *msg.args.add(i) };
+                            (!a.is_null()).then(|| unsafe { CStr::from_ptr(a) }.to_string_lossy().into_owned())
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                Event::Message(args)
             }
             EVENT_PROPERTY_CHANGE if !ev.data.is_null() => {
                 // SAFETY: PROPERTY_CHANGE events carry an mpv_event_property
                 // whose data matches the format asked for.
                 let prop = unsafe { &*(ev.data as *const MpvEventProperty) };
-                let mut s = shared.state.lock().unwrap();
                 match (ev.reply_userdata, prop.format) {
-                    (OBS_TIME, FORMAT_DOUBLE) => s.position = unsafe { *(prop.data as *const f64) },
-                    (OBS_DURATION, FORMAT_DOUBLE) => s.duration = unsafe { *(prop.data as *const f64) },
-                    (OBS_PAUSE, FORMAT_FLAG) => s.paused = unsafe { *(prop.data as *const c_int) } != 0,
-                    (_, FORMAT_NONE) => {}
-                    _ => {}
+                    (OBS_TIME, FORMAT_DOUBLE) => Event::Position(unsafe { *(prop.data as *const f64) }),
+                    (OBS_DURATION, FORMAT_DOUBLE) => Event::Duration(unsafe { *(prop.data as *const f64) }),
+                    (OBS_PAUSE, FORMAT_FLAG) => Event::Paused(unsafe { *(prop.data as *const c_int) } != 0),
+                    (_, FORMAT_NONE) | _ => continue,
                 }
             }
-            _ => {}
+            _ => continue,
+        };
+        if !shared.handle(event) {
+            return;
         }
+    }
+}
+
+/// The mpv program, driven over its JSON IPC socket.
+#[cfg(unix)]
+mod ipc {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    use std::path::PathBuf;
+    use std::process::{Child, Command, Stdio};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    use super::{options, Backend, End, Event, Options, Shared, OBS_DURATION, OBS_PAUSE, OBS_TIME};
+
+    struct Ipc {
+        socket: Mutex<UnixStream>,
+        child: Mutex<Child>,
+        next_id: AtomicU64,
+    }
+
+    impl Ipc {
+        fn send(&self, command: serde_json::Value) -> Result<(), String> {
+            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+            let mut line = serde_json::json!({ "command": command, "request_id": id }).to_string();
+            line.push('\n');
+            self.socket.lock().unwrap().write_all(line.as_bytes()).map_err(|e| format!("mpv: {e}"))
+        }
+    }
+
+    impl Backend for Ipc {
+        fn command(&self, args: &[&str]) -> Result<(), String> {
+            self.send(serde_json::json!(args))
+        }
+
+        fn set(&self, name: &str, value: &str) -> Result<(), String> {
+            // `set` parses the value like a command line or mpv.conf does.
+            self.send(serde_json::json!(["set", name, value]))
+        }
+    }
+
+    impl Drop for Ipc {
+        fn drop(&mut self) {
+            if let Ok(mut child) = self.child.lock() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
+    /// The mpv program to run: one bundled next to the app (the Mac .app
+    /// carries its own), `NEBULA_MPV_BIN`, Homebrew's, or `mpv` on PATH.
+    fn binary() -> PathBuf {
+        if let Some(p) = std::env::var_os("NEBULA_MPV_BIN") {
+            return PathBuf::from(p);
+        }
+        let bundled = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("mpv")));
+        let candidates = bundled.into_iter().chain(
+            ["/opt/homebrew/bin/mpv", "/usr/local/bin/mpv"].into_iter().map(PathBuf::from),
+        );
+        candidates.into_iter().find(|p| p.is_file()).unwrap_or_else(|| PathBuf::from("mpv"))
+    }
+
+    pub(super) fn start(opts: &Options) -> Result<Arc<Shared>, String> {
+        static COUNT: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "nebula-player-{}-{}.sock",
+            std::process::id(),
+            COUNT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        let bin = binary();
+        let mut cmd = Command::new(&bin);
+        cmd.arg(format!("--input-ipc-server={}", path.display()));
+        for (k, v, libmpv_only) in options(opts) {
+            if !libmpv_only {
+                cmd.arg(format!("--{k}={v}"));
+            }
+        }
+        let mut child = cmd
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("couldn't start {}: {e}. {}", bin.display(), super::INSTALL_HINT))?;
+
+        // mpv makes the socket as it starts up.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let socket = loop {
+            match UnixStream::connect(&path) {
+                Ok(s) => break s,
+                Err(e) => {
+                    if let Ok(Some(status)) = child.try_wait() {
+                        return Err(format!("mpv exited at startup ({status})"));
+                    }
+                    if Instant::now() > deadline {
+                        let _ = child.kill();
+                        return Err(format!("mpv didn't open its control socket: {e}"));
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        };
+        let reader = socket.try_clone().map_err(|e| e.to_string())?;
+        let ipc = Ipc { socket: Mutex::new(socket), child: Mutex::new(child), next_id: AtomicU64::new(1) };
+        for (id, name) in [(OBS_TIME, "time-pos"), (OBS_DURATION, "duration"), (OBS_PAUSE, "pause")] {
+            ipc.send(serde_json::json!(["observe_property", id, name]))?;
+        }
+        let shared = Shared::new(Box::new(ipc));
+        let events = shared.clone();
+        std::thread::Builder::new()
+            .name("mpv-ipc".into())
+            .spawn(move || {
+                for line in BufReader::new(reader).lines() {
+                    let Ok(line) = line else { break };
+                    if let Some(event) = parse(&line) {
+                        if !events.handle(event) {
+                            break;
+                        }
+                    }
+                }
+                // The socket closed: mpv has quit (or crashed).
+                events.handle(Event::Shutdown);
+                let _ = std::fs::remove_file(&path);
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(shared)
+    }
+
+    /// One line from mpv's socket, if it's an event the player follows.
+    pub(super) fn parse(line: &str) -> Option<Event> {
+        let v: serde_json::Value = serde_json::from_str(line).ok()?;
+        if let Some(err) = v.get("error").and_then(|e| e.as_str()).filter(|e| *e != "success") {
+            log::warn!("mpv: {err}");
+            return None;
+        }
+        Some(match v.get("event")?.as_str()? {
+            "shutdown" => Event::Shutdown,
+            "start-file" => Event::StartFile,
+            "file-loaded" => Event::FileLoaded,
+            "end-file" => {
+                let reason = match v.get("reason").and_then(|r| r.as_str()) {
+                    Some("eof") => End::Eof,
+                    Some("error") => End::Error,
+                    _ => End::Stopped,
+                };
+                let error = v.get("file_error").and_then(|e| e.as_str()).map(str::to_string);
+                Event::EndFile(reason, error)
+            }
+            "client-message" => Event::Message(
+                v.get("args")?.as_array()?.iter().filter_map(|a| a.as_str().map(str::to_string)).collect(),
+            ),
+            "property-change" => {
+                let data = v.get("data")?;
+                match v.get("id")?.as_u64()? {
+                    OBS_TIME => Event::Position(data.as_f64()?),
+                    OBS_DURATION => Event::Duration(data.as_f64()?),
+                    OBS_PAUSE => Event::Paused(data.as_bool()?),
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        })
     }
 }
 
@@ -531,6 +782,23 @@ pub fn track_id(stream_indexes_of_type: &[i64], chosen: i64) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn ipc_events_parse() {
+        use super::ipc::parse;
+        assert_eq!(parse(r#"{"event":"property-change","id":1,"name":"time-pos","data":12.5}"#), Some(Event::Position(12.5)));
+        assert_eq!(parse(r#"{"event":"property-change","id":3,"name":"pause","data":true}"#), Some(Event::Paused(true)));
+        // Not known yet (no file): no event.
+        assert_eq!(parse(r#"{"event":"property-change","id":2,"name":"duration"}"#), None);
+        assert_eq!(parse(r#"{"event":"end-file","reason":"eof","playlist_entry_id":1}"#), Some(Event::EndFile(End::Eof, None)));
+        assert_eq!(
+            parse(r#"{"event":"end-file","reason":"error","file_error":"loading failed"}"#),
+            Some(Event::EndFile(End::Error, Some("loading failed".into())))
+        );
+        assert_eq!(parse(r#"{"event":"client-message","args":["nebula-skip"]}"#), Some(Event::Message(vec!["nebula-skip".into()])));
+        assert_eq!(parse(r#"{"request_id":4,"error":"success","data":null}"#), None);
+    }
 
     #[test]
     fn track_ids_count_per_type() {
