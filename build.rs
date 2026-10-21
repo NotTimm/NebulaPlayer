@@ -4,12 +4,12 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=res/nebula-player.ico");
+    println!("cargo:rerun-if-changed=res/icons/io.github.NotTimm.NebulaPlayer.ico");
 
     #[cfg(windows)]
     {
         let mut res = winresource::WindowsResource::new();
-        res.set_icon("res/nebula-player.ico")
+        res.set_icon("res/icons/io.github.NotTimm.NebulaPlayer.ico")
             .set("ProductName", "Nebula Player")
             .set("FileDescription", "Nebula Player")
             .set("CompanyName", "Tim Singel")
