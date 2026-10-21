@@ -41,6 +41,15 @@ files are play-only, without scraping; metadata comes from Jellyfin.
 
 Last updated 2026-10-21.
 
+- **Pending for the owner:** `packaging/pending/build.yml` goes in as
+  `.github/workflows/build.yml` (pasted on github.com; this session's
+  token can't push workflows). Once it's in, delete the pending copy.
+- Testing: `tools/mock-jellyfin.py` (also `--legacy` for 10.8 routes).
+  Seen working in Xvfb against it: sign-in (Quick Connect), home, library
+  grid, show/movie pages, search, settings, playback with reports,
+  autoplay of the next episode, stop on closing mpv, .deb install.
+  Not yet seen on a real Jellyfin server, on Wayland or on Windows.
+
 - First alpha code: sign-in (Quick Connect + password), home (featured
   banner, My Media, Continue Watching, Next Up, Recently Added per
   library), library grids (sort, paging), details (movie/show/episode,
@@ -49,6 +58,10 @@ Last updated 2026-10-21.
 - Playback: mpv in its own window (libmpv client API, `src/mpv.rs`),
   direct play only, Jellyfin's default audio/subtitle tracks mapped to
   mpv ids, external subs added, progress reports, autoplay next episode.
+- libmpv is loaded at run time (libloading), not linked; the Windows zip
+  ships `libmpv-2.dll`. A file given on the command line plays only once
+  the window has opened (starting mpv's renderer while the app's was
+  starting crashed Mesa).
 - Not yet: embedded video (see docs/DEVELOPING.md "Embedding"), an
-  in-app track picker, transcoding fallback, Windows CI build tested on
-  real hardware, packaging beyond what's in `.github/workflows`.
+  in-app track picker, transcoding fallback, a Windows installer, macOS
+  builds, Fedora COPR.
