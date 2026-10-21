@@ -50,9 +50,15 @@ Last updated 2026-10-21.
   ships in `vulkan\`, loaded only when Windows has none) and flatpak
   (1024px icon refused; left out). Run 39651963465 with both fixes: all
   green. Signing was skipped there (secrets not visible to it yet).
-- COPR: spec + `.copr/Makefile` ready; the project isn't created yet
-  (steps in docs/DEVELOPING.md). Signing uses the reader's key if the
-  owner adds MINISIGN_KEY/MINISIGN_PASSWORD to this repo.
+- Released v0.1.0-alpha.1 (2026-10-21, pre-release, every file signed
+  with the reader's minisign key). Its GitHub text was published before
+  the notes file's Windows line mentioned the `vulkan` folder.
+- COPR: project `timbo-slice/nebula-player` (owner's account), package
+  `nebula-player` from SCM + make srpm, chroots Fedora 43/44/45/rawhide
+  x86_64, no auto-rebuild (start it by hand after each release). Plan
+  (owner, "this weekend"): one `timbo-slice/nebula-apps` project holding
+  both nebula-player and nebula-reader; the Reader's workflow `copr` job
+  then needs its project name changed (a workflow paste).
 - Testing: `tools/mock-jellyfin.py` (also `--legacy` for 10.8 routes).
   Seen working in Xvfb against it: sign-in (Quick Connect), home, library
   grid, show/movie pages, search, settings, playback with reports,
