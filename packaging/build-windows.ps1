@@ -1,5 +1,6 @@
-# Builds the Windows packages from one staged folder (nebula-player.exe and
-# libmpv-2.dll, which it loads to play videos):
+# Builds the Windows packages from one staged folder (nebula-player.exe,
+# libmpv-2.dll, which it loads to play videos, and vulkan\vulkan-1.dll,
+# the Vulkan loader libmpv needs, used only when Windows has none):
 #   - a portable .zip: unzip anywhere and run
 #   - a per-user installer (Inno Setup, packaging/windows/nebula-player.iss).
 #     Skipped with a warning if Inno Setup isn't installed, unless
@@ -7,13 +8,19 @@
 #
 # Needs Rust (MSVC toolchain). libmpv-2.dll comes from MPV_DLL if set,
 # else from the pinned mpv build below (downloaded once into dist\, checked
-# by hash, unpacked with 7-Zip).
+# by hash, unpacked with 7-Zip); the Vulkan loader likewise from NuGet.
 $ErrorActionPreference = 'Stop'
 
 # One exact libmpv build, so a new upload can't change what ships. Newer:
 # https://sourceforge.net/projects/mpv-player-windows/files/libmpv/
 $MpvDevFile = 'mpv-dev-x86_64-20261018-git-01e2533f31.7z'
 $MpvDevSha256 = 'd7f5621f42b6e161fe032df914a10bdece28a89df3e57c6c3e16a5a250929b5e'
+
+# Khronos' Vulkan loader (Apache-2.0, 1.3.283), as built for Silk.NET.
+# libmpv-2.dll imports vulkan-1.dll; GPU drivers install it, but machines
+# without one (VMs, CI) couldn't load libmpv at all.
+$VulkanPkg = 'silk.net.vulkan.loader.native.2025.9.12.nupkg'
+$VulkanPkgSha256 = '33811c05ab0bcba632ad38abba459b0d72d6e58859342e0782d011863dde07d1'
 
 $Repo = Resolve-Path (Join-Path $PSScriptRoot '..')
 $Dist = Join-Path $Repo 'dist'
@@ -27,6 +34,11 @@ foreach ($line in Get-Content (Join-Path $Repo 'Cargo.toml')) {
     if ($InPackage -and $line -match '^version\s*=\s*"([^"]+)"') { $Version = $Matches[1]; break }
 }
 if (-not $Version) { throw 'could not read version from Cargo.toml' }
+
+# 7-Zip unpacks the libmpv and Vulkan loader downloads.
+$SevenZip = (Get-Command 7z -ErrorAction SilentlyContinue).Source
+if (-not $SevenZip) { $SevenZip = "$env:ProgramFiles\7-Zip\7z.exe" }
+if (-not (Test-Path $SevenZip)) { throw '7-Zip not found (winget install 7zip.7zip)' }
 
 # libmpv
 $MpvDll = $env:MPV_DLL
@@ -43,15 +55,31 @@ if (-not $MpvDll) {
         Remove-Item $Archive
         throw "$MpvDevFile has hash $Hash, expected $MpvDevSha256"
     }
-    $SevenZip = (Get-Command 7z -ErrorAction SilentlyContinue).Source
-    if (-not $SevenZip) { $SevenZip = "$env:ProgramFiles\7-Zip\7z.exe" }
-    if (-not (Test-Path $SevenZip)) { throw '7-Zip not found (winget install 7zip.7zip), or set MPV_DLL' }
     $MpvDir = Join-Path $Dist 'mpv-dev'
     & $SevenZip x -y "-o$MpvDir" $Archive libmpv-2.dll | Out-Null
     if ($LASTEXITCODE -ne 0) { throw '7-Zip failed' }
     $MpvDll = Join-Path $MpvDir 'libmpv-2.dll'
 }
 if (-not (Test-Path $MpvDll)) { throw "libmpv-2.dll not found at $MpvDll" }
+
+# Vulkan loader
+$VulkanArchive = Join-Path $Dist $VulkanPkg
+if (-not (Test-Path $VulkanArchive)) {
+    Write-Host "==> Downloading $VulkanPkg"
+    $Url = "https://api.nuget.org/v3-flatcontainer/silk.net.vulkan.loader.native/2025.9.12/$VulkanPkg"
+    curl.exe -fsSL --retry 5 -o $VulkanArchive $Url
+    if ($LASTEXITCODE -ne 0) { throw "couldn't download $Url" }
+}
+$Hash = (Get-FileHash $VulkanArchive -Algorithm SHA256).Hash.ToLower()
+if ($Hash -ne $VulkanPkgSha256) {
+    Remove-Item $VulkanArchive
+    throw "$VulkanPkg has hash $Hash, expected $VulkanPkgSha256"
+}
+$VulkanDir = Join-Path $Dist 'vulkan-loader'
+& $SevenZip e -y "-o$VulkanDir" $VulkanArchive 'runtimes/win-x64/native/vulkan-1.dll' | Out-Null
+if ($LASTEXITCODE -ne 0) { throw '7-Zip failed' }
+$VulkanDll = Join-Path $VulkanDir 'vulkan-1.dll'
+if (-not (Test-Path $VulkanDll)) { throw "vulkan-1.dll not found in $VulkanPkg" }
 
 Write-Host '==> Building release binary'
 Push-Location $Repo
@@ -74,11 +102,20 @@ New-Item -ItemType Directory -Path $Stage | Out-Null
 
 Copy-Item $Exe $Stage
 Copy-Item $MpvDll $Stage
+$StageVulkan = Join-Path $Stage 'vulkan'
+New-Item -ItemType Directory -Path $StageVulkan | Out-Null
+Copy-Item $VulkanDll $StageVulkan
+@"
+vulkan-1.dll is Khronos' Vulkan loader (https://github.com/KhronosGroup/Vulkan-Loader),
+licensed under the Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0).
+Nebula Player uses it only when Windows has no Vulkan loader of its own.
+"@ | Set-Content -Encoding utf8 (Join-Path $StageVulkan 'README.txt')
 Copy-Item (Join-Path $Repo 'LICENSE') (Join-Path $Stage 'LICENSE.txt')
 @"
 Nebula Player $Version for Windows (portable)
 
-Run nebula-player.exe. Keep libmpv-2.dll next to it: it plays the videos.
+Run nebula-player.exe. Keep libmpv-2.dll and the vulkan folder next to
+it: they play the videos.
 
 Your settings and Jellyfin sign-ins are stored in %APPDATA%\NebulaPlayer
 (mpv.conf and input.conf go in its mpv folder) and the poster cache in

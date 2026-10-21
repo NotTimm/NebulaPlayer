@@ -103,17 +103,58 @@ pub const INSTALL_HINT: &str = "libmpv-2.dll is missing: it belongs next to nebu
 #[cfg(target_os = "macos")]
 pub const INSTALL_HINT: &str = "Install mpv to play videos: \"brew install mpv\".";
 
+/// Candidates to load: on Windows the copy beside the exe first, by full
+/// path, so no other folder on the search path can supply it.
+fn library_paths() -> Vec<std::ffi::OsString> {
+    let mut paths = Vec::new();
+    #[cfg(windows)]
+    if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf())) {
+        paths.extend(LIBRARY_NAMES.iter().map(|name| dir.join(name).into_os_string()));
+    }
+    paths.extend(LIBRARY_NAMES.iter().map(std::ffi::OsString::from));
+    paths
+}
+
+/// The Windows libmpv build imports vulkan-1.dll, which GPU drivers
+/// install. Without one (no driver, some VMs) libmpv wouldn't load at all,
+/// so the copy shipped in the `vulkan` folder is loaded first; Windows then
+/// uses that module for libmpv's import. The system's loader always wins
+/// when there is one, so a newer driver's loader is never shadowed.
+#[cfg(windows)]
+fn preload_vulkan() {
+    use libloading::os::windows::{Library, LOAD_LIBRARY_SEARCH_SYSTEM32};
+    // SAFETY: the Vulkan loader's constructors only set up its own state.
+    if let Ok(lib) = unsafe { Library::load_with_flags("vulkan-1.dll", LOAD_LIBRARY_SEARCH_SYSTEM32) } {
+        std::mem::forget(lib);
+        return;
+    }
+    let Some(bundled) = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("vulkan").join("vulkan-1.dll"))) else {
+        return;
+    };
+    // SAFETY: as above; kept loaded for as long as the app runs.
+    match unsafe { Library::new(&bundled) } {
+        Ok(lib) => {
+            log::info!("no system Vulkan loader, using {}", bundled.display());
+            std::mem::forget(lib);
+        }
+        Err(e) => log::warn!("no Vulkan loader: {e}"),
+    }
+}
+
 fn load() -> Result<Api, String> {
-    let mut last = String::new();
-    for name in LIBRARY_NAMES {
+    #[cfg(windows)]
+    preload_vulkan();
+    let mut errors = Vec::new();
+    for name in library_paths() {
         // SAFETY: loading libmpv runs only its (benign) library constructors.
-        let lib = match unsafe { libloading::Library::new(name) } {
+        let lib = match unsafe { libloading::Library::new(&name) } {
             Ok(lib) => lib,
             Err(e) => {
-                last = e.to_string();
+                errors.push(e.to_string());
                 continue;
             }
         };
+        let name = name.to_string_lossy();
         // SAFETY: each symbol is looked up with libmpv's documented signature.
         unsafe {
             macro_rules! sym {
@@ -138,8 +179,9 @@ fn load() -> Result<Api, String> {
             return Ok(api);
         }
     }
-    log::warn!("libmpv not found: {last}");
-    Err(INSTALL_HINT.to_string())
+    // The first error is the telling one (on Windows, the bundled copy's).
+    log::warn!("libmpv not loaded: {}", errors.join("; "));
+    Err(format!("{INSTALL_HINT} ({})", errors.first().map_or("", |e| e.as_str())))
 }
 
 fn api() -> Result<&'static Api, String> {
