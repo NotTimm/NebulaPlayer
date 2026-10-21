@@ -41,9 +41,9 @@ files are play-only, without scraping; metadata comes from Jellyfin.
 
 Last updated 2026-10-21.
 
-- **Pending for the owner:** `packaging/pending/build.yml` goes in as
-  `.github/workflows/build.yml` (pasted on github.com; this session's
-  token can't push workflows). Once it's in, delete the pending copy.
+- CI: `.github/workflows/build.yml` (added by the owner on github.com).
+  First run green 2026-10-21: Linux .deb/.rpm/.tar.gz and Windows .zip as
+  artifacts. No macOS job yet (offered; owner to decide). Not released.
 - Testing: `tools/mock-jellyfin.py` (also `--legacy` for 10.8 routes).
   Seen working in Xvfb against it: sign-in (Quick Connect), home, library
   grid, show/movie pages, search, settings, playback with reports,
