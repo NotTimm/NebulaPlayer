@@ -51,8 +51,11 @@ pub struct Settings {
     pub accent: AccentChoice,
     /// The signed-in account shown (`Account::key`).
     pub account: Option<String>,
-    /// mpv opens full screen.
+    /// Video starts full screen.
     pub fullscreen: bool,
+    /// Play in mpv's own window (with its own controls and keys) rather
+    /// than inside the app's.
+    pub separate_window: bool,
     /// Hardware decoding (mpv's `hwdec=auto-safe`).
     pub hwdec: bool,
     /// Episodes play on into the next one.
@@ -70,6 +73,7 @@ impl Default for Settings {
             accent: AccentChoice::Desktop,
             account: None,
             fullscreen: false,
+            separate_window: false,
             hwdec: true,
             autoplay_next: true,
             skip: SkipMode::Ask,

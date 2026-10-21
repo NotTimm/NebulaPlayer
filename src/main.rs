@@ -9,6 +9,7 @@ mod mpv;
 mod platform;
 mod settings;
 mod theme;
+mod video;
 
 use cosmic::app::Settings;
 use cosmic::iced::Size;

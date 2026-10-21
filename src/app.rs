@@ -26,12 +26,14 @@ mod details;
 mod home;
 mod library;
 mod local;
+mod player;
 mod search;
 mod settings_view;
 mod signin;
 mod widgets;
 
 pub use library::{LibraryMsg, LibraryPage};
+pub use player::{PlayerMsg, PlayerUi};
 pub use local::LocalFile;
 
 /// Image widths fetched for each use (about twice the size shown, for
@@ -134,6 +136,11 @@ pub struct SearchState {
 struct Playback {
     /// Jellyfin's side of it; `None` for a local file.
     remote: Option<RemotePlay>,
+    /// What the player's title bar shows.
+    title: String,
+    /// The episodes either side, for the player's buttons.
+    previous: Option<Item>,
+    next: Option<Item>,
     /// `mpv::State::loaded` when this started, to tell its load from the
     /// previous file's.
     loaded_before: u64,
@@ -176,6 +183,8 @@ impl RemotePlay {
 #[derive(Clone, Debug)]
 pub struct PlayStart {
     item: Item,
+    previous: Option<Item>,
+    next: Option<Item>,
     info: jellyfin::PlaybackInfo,
     segments: Vec<jellyfin::Segment>,
     resume: bool,
@@ -217,11 +226,14 @@ pub enum Message {
     /// The page scrolled: how far down it is (0–1) and in pixels.
     Scrolled(f32, f32),
     WindowOpened,
+    /// Scrolls the page back to where it was (after the player).
+    RestoreScroll(f32),
     SearchInput(String),
     SearchSubmit,
     SearchResults(String, Result<Vec<Item>, String>),
 
     // Playback
+    Player(PlayerMsg),
     Play { item: Item, resume: bool },
     PlaybackReady(Result<Box<PlayStart>, String>),
     PlayerTick,
@@ -247,6 +259,7 @@ pub enum Message {
     CloseNav,
     SetFullscreen(bool),
     SetHwdec(bool),
+    SetSeparateWindow(bool),
     SetAutoplay(bool),
     SetSkip(usize),
     OpenMpvConfig,
@@ -279,6 +292,7 @@ pub struct App {
     images_pending: HashSet<Key>,
     player: Option<mpv::Player>,
     playback: Option<Playback>,
+    player_ui: PlayerUi,
     /// A file from the command line, played once the window is up: mpv
     /// setting up its renderer while the app sets up its own has crashed
     /// graphics drivers.
@@ -484,6 +498,7 @@ impl App {
 
     fn player_options(&self) -> mpv::Options {
         mpv::Options {
+            embed: !self.settings.separate_window && !mpv::separate_only(),
             fullscreen: self.settings.fullscreen,
             hwdec: self.settings.hwdec,
             config_dir: crate::platform::mpv_config_dir(),
@@ -491,15 +506,47 @@ impl App {
         }
     }
 
-    /// The running player, or a new one if mpv's window was closed.
-    fn ensure_player(&mut self) -> Result<&mpv::Player, String> {
-        if self.player.as_ref().is_some_and(|p| p.state().closed) {
+    /// The running player, or a new one if there's none (or mpv's window
+    /// was closed). When it draws into this window, the window switches to
+    /// the player (`entered`).
+    fn ensure_player(&mut self) -> Result<(&mpv::Player, Task<Message>), String> {
+        let opts = self.player_options();
+        if self.player.as_ref().is_some_and(|p| p.state().closed || p.video().is_some() != opts.embed) {
             self.player = None;
         }
+        let mut entered = Task::none();
         if self.player.is_none() {
-            self.player = Some(mpv::Player::new(&self.player_options())?);
+            let player = match mpv::Player::new(&opts) {
+                Err(e) if opts.embed => {
+                    log::warn!("can't play inside the window ({e}); using mpv's own");
+                    mpv::Player::new(&mpv::Options { embed: false, ..opts })?
+                }
+                other => other?,
+            };
+            let inside = player.video().is_some();
+            self.player = Some(player);
+            if inside {
+                entered = self.enter_player();
+            }
         }
-        Ok(self.player.as_ref().unwrap())
+        Ok((self.player.as_ref().unwrap(), entered))
+    }
+
+    /// Ends playback from the player screen: reports where it stopped,
+    /// closes mpv, and returns to the page underneath.
+    fn stop_playback(&mut self) -> Task<Message> {
+        let stopped = self.end_playback();
+        self.player = None;
+        let left = self.leave_player();
+        Task::batch([stopped, left, self.refresh_home(), self.refresh_details()])
+    }
+
+    /// Skips the segment whose Skip button is up.
+    fn skip_now(&mut self) {
+        let (Some(player), Some(pb)) = (&self.player, &mut self.playback) else { return };
+        let Some(i) = pb.prompting.take() else { return };
+        let state = player.state();
+        skip_to(player, &pb.segments[i], &state);
     }
 
     /// Tells the server the current file stopped (if it's a server's).
@@ -533,8 +580,8 @@ impl App {
             external_subs: source.external_subs(&account, &start.item.id),
             remember_position: false,
         };
-        let loaded_before = match self.ensure_player() {
-            Ok(p) => {
+        let (loaded_before, entered) = match self.ensure_player() {
+            Ok((p, entered)) => {
                 let before = p.state().loaded;
                 if let Err(e) = p.load(&load) {
                     self.error = Some(e);
@@ -542,7 +589,7 @@ impl App {
                 }
                 // A skip prompt left up by the last file.
                 p.skip_keys(false);
-                before
+                (before, entered)
             }
             Err(e) => {
                 self.error = Some(e);
@@ -550,6 +597,9 @@ impl App {
             }
         };
         self.playback = Some(Playback {
+            title: load.title.clone(),
+            previous: start.previous,
+            next: start.next,
             remote: Some(RemotePlay {
                 account,
                 item: start.item,
@@ -567,7 +617,7 @@ impl App {
             skipped: HashSet::new(),
             skip_presses: self.player.as_ref().map(|p| p.state().skip_presses).unwrap_or(0),
         });
-        stopped
+        Task::batch([stopped, entered])
     }
 
     fn play_local(&mut self, path: PathBuf) -> Task<Message> {
@@ -580,14 +630,18 @@ impl App {
             ..Default::default()
         };
         match self.ensure_player() {
-            Ok(p) => {
+            Ok((p, entered)) => {
                 let loaded_before = p.state().loaded;
                 if let Err(e) = p.load(&load) {
                     self.error = Some(e);
                     return stopped;
                 }
                 p.skip_keys(false);
+                let skip_presses = p.state().skip_presses;
                 self.playback = Some(Playback {
+                    title: load.title.clone(),
+                    previous: None,
+                    next: None,
                     remote: None,
                     loaded_before,
                     started: false,
@@ -598,8 +652,9 @@ impl App {
                     segments: Vec::new(),
                     prompting: None,
                     skipped: HashSet::new(),
-                    skip_presses: p.state().skip_presses,
+                    skip_presses,
                 });
+                return Task::batch([stopped, entered]);
             }
             Err(e) => self.error = Some(e),
         }
@@ -611,11 +666,17 @@ impl App {
     fn player_tick(&mut self) -> Task<Message> {
         let Some(player) = &self.player else { return Task::none() };
         let state = player.state();
+        let inside = player.video().is_some();
+        if inside {
+            self.player_ui.state = state.clone();
+            self.player_idle_check();
+        }
         if state.closed {
             self.player = None;
             let stopped = self.end_playback();
+            let left = if inside { self.leave_player() } else { Task::none() };
             // Continue Watching and the page's progress bars have changed.
-            return Task::batch([stopped, self.refresh_home(), self.refresh_details()]);
+            return Task::batch([stopped, left, self.refresh_home(), self.refresh_details()]);
         }
         let Some(pb) = &mut self.playback else { return Task::none() };
         if state.loaded > pb.loaded_before && state.ended.is_none() && state.duration > 0.0 {
@@ -625,7 +686,7 @@ impl App {
         pb.paused = state.paused;
         if state.loaded > pb.loaded_before && state.ended.is_none() {
             if let Some(player) = &self.player {
-                skip_segments(player, pb, &state, self.settings.skip);
+                skip_segments(player, pb, &state, self.settings.skip, inside);
             }
         }
 
@@ -714,26 +775,33 @@ impl App {
     }
 }
 
+/// Jumps past a segment.
+fn skip_to(player: &mpv::Player, seg: &jellyfin::Segment, state: &mpv::State) {
+    // Credits that run to the end skip to the end, so the next episode
+    // starts.
+    let end = if state.duration > 0.0 { seg.end.min(state.duration) } else { seg.end };
+    player.seek(end);
+    player.show_text(&format!("Skipped {}", seg.kind.label().to_lowercase()), 1500);
+}
+
 /// Offers to skip (or skips) the intro, credits, recap or preview the
-/// position is in, and acts on the skip key.
-fn skip_segments(player: &mpv::Player, pb: &mut Playback, state: &mpv::State, mode: SkipMode) {
+/// position is in, and acts on the skip key. Inside the app's window
+/// (`inside`) the offer is the player's Skip button; in mpv's own window
+/// it's a message on mpv's screen, with S and Enter bound to skip.
+fn skip_segments(player: &mpv::Player, pb: &mut Playback, state: &mpv::State, mode: SkipMode, inside: bool) {
     // The last half second of a segment isn't worth a prompt.
     let current = pb.segments.iter().position(|s| state.position >= s.start && state.position < s.end - 0.5);
-    let skip_to = |player: &mpv::Player, seg: &jellyfin::Segment| {
-        // Credits that run to the end skip to the end, so the next
-        // episode starts.
-        let end = if state.duration > 0.0 { seg.end.min(state.duration) } else { seg.end };
-        player.seek(end);
-        player.show_text(&format!("Skipped {}", seg.kind.label().to_lowercase()), 1500);
-    };
+    let skip_to = |player: &mpv::Player, seg: &jellyfin::Segment| skip_to(player, seg, state);
 
     let pressed = state.skip_presses > pb.skip_presses;
     pb.skip_presses = state.skip_presses;
 
     if pb.prompting.is_some() && pb.prompting != current {
         // Left the segment (watched it, or seeked away).
-        player.skip_keys(false);
-        player.show_text("", 1);
+        if !inside {
+            player.skip_keys(false);
+            player.show_text("", 1);
+        }
         pb.prompting = None;
     }
     let Some(i) = current else { return };
@@ -750,6 +818,8 @@ fn skip_segments(player: &mpv::Player, pb: &mut Playback, state: &mpv::State, mo
                 player.skip_keys(false);
                 pb.prompting = None;
                 skip_to(player, &seg);
+            } else if pb.prompting.is_none() && inside {
+                pb.prompting = Some(i);
             } else if pb.prompting.is_none() {
                 pb.prompting = Some(i);
                 player.skip_keys(true);
@@ -872,6 +942,7 @@ impl Application for App {
             images_pending: HashSet::new(),
             player: None,
             playback: None,
+            player_ui: PlayerUi::default(),
             startup_file: flags,
             error: None,
         };
@@ -889,6 +960,7 @@ impl Application for App {
     fn nav_model(&self) -> Option<&nav_bar::Model> {
         match self.page {
             Page::SignIn => None,
+            _ if self.playing_inside() => None,
             _ => Some(&self.nav),
         }
     }
@@ -916,6 +988,13 @@ impl Application for App {
     }
 
     fn on_escape(&mut self) -> Task<Self::Message> {
+        // In the player: out of full screen first, then out of the player.
+        if self.playing_inside() {
+            if self.player_ui.fullscreen {
+                return self.update(Message::Player(PlayerMsg::ToggleFullscreen));
+            }
+            return self.update(Message::Player(PlayerMsg::Stop));
+        }
         if self.core.window.show_context {
             self.core.window.show_context = false;
             return Task::none();
@@ -969,7 +1048,11 @@ impl Application for App {
         }
         #[cfg(target_os = "linux")]
         subs.push(crate::theme::accent_changes().map(Message::DesktopAccent));
-        if self.player.is_some() {
+        if self.playing_inside() {
+            subs.push(Subscription::run(player::frames));
+            subs.push(cosmic::iced::keyboard::listen().map(player::key_message));
+            subs.push(time::every(Duration::from_millis(250)).map(|_| Message::PlayerTick));
+        } else if self.player.is_some() {
             subs.push(time::every(Duration::from_millis(500)).map(|_| Message::PlayerTick));
         }
         if matches!(self.page, Page::Home) && self.home.featured.len() > 1 {
@@ -987,6 +1070,9 @@ impl Application for App {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
+        if self.playing_inside() {
+            return self.view_player();
+        }
         let body = match &self.page {
             Page::SignIn => self.view_signin(),
             Page::Home => self.view_home(),
@@ -1025,6 +1111,7 @@ impl App {
                     });
                 }
             }
+            Message::RestoreScroll(y) => self.scroll_to(y),
             Message::Scrolled(y, pixels) => {
                 self.scroll_y = y;
                 if let Page::Library(lib) = &mut self.page {
@@ -1357,9 +1444,20 @@ impl App {
                             }
                             _ => item,
                         };
-                        let (info, segments) =
-                            tokio::join!(jellyfin::playback_info(&account, &item.id), jellyfin::segments(&account, &item.id));
-                        Ok(Box::new(PlayStart { item, info: info?, segments, resume }))
+                        let neighbours = async {
+                            match (&item.series_id, item.is_episode()) {
+                                (Some(series), true) => {
+                                    jellyfin::episode_neighbours(&account, series, &item.id).await.unwrap_or_default()
+                                }
+                                _ => (None, None),
+                            }
+                        };
+                        let (info, segments, (previous, next)) = tokio::join!(
+                            jellyfin::playback_info(&account, &item.id),
+                            jellyfin::segments(&account, &item.id),
+                            neighbours,
+                        );
+                        Ok(Box::new(PlayStart { item, previous, next, info: info?, segments, resume }))
                     }
                     .await;
                     Message::PlaybackReady(result)
@@ -1370,6 +1468,7 @@ impl App {
                 Err(e) => self.error = Some(e),
             },
             Message::PlayerTick => return self.player_tick(),
+            Message::Player(msg) => return self.update_player(msg),
             Message::NextEpisode(result) => match result {
                 Ok(Some(next)) => return self.update(Message::Play { item: next, resume: false }),
                 Ok(None) | Err(_) => {
@@ -1464,6 +1563,10 @@ impl App {
             Message::CloseNav => self.core.nav_bar_set_toggled(false),
             Message::SetFullscreen(on) => {
                 self.settings.fullscreen = on;
+                self.settings.save();
+            }
+            Message::SetSeparateWindow(on) => {
+                self.settings.separate_window = on;
                 self.settings.save();
             }
             Message::SetHwdec(on) => {

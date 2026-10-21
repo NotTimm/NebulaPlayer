@@ -829,6 +829,15 @@ pub async fn episode_after(account: &Account, series_id: &str, episode_id: &str)
     Ok(page.items.into_iter().find(|e| e.id != episode_id))
 }
 
+/// The episodes either side of `episode_id` in its show, across seasons.
+pub async fn episode_neighbours(account: &Account, series_id: &str, episode_id: &str) -> Result<(Option<Item>, Option<Item>), String> {
+    let url = query(account, &format!("/Shows/{series_id}/Episodes"), &format!("userId={}", account.user_id));
+    let page: ItemsPage = get_json(&url, &account.auth()).await?;
+    let Some(i) = page.items.iter().position(|e| e.id == episode_id) else { return Ok((None, None)) };
+    let previous = i.checked_sub(1).and_then(|p| page.items.get(p)).cloned();
+    Ok((previous, page.items.get(i + 1).cloned()))
+}
+
 /// What to play for a show: where the user is up to, or the very first
 /// episode.
 pub async fn series_start(account: &Account, series_id: &str) -> Result<Option<Item>, String> {

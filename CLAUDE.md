@@ -39,7 +39,7 @@ files are play-only, without scraping; metadata comes from Jellyfin.
 
 ## Where things stand
 
-Last updated 2026-10-21.
+Last updated 2026-10-21 (evening session).
 
 - CI: `.github/workflows/build.yml` is the full workflow modelled on
   Nebula Reader's minus COPR and winget (deb, rpm, AppImage, flatpak,
@@ -63,7 +63,12 @@ Last updated 2026-10-21.
   `timbo-slice/nebula-apps` project holding both nebula-player and
   nebula-reader: here that's just setting COPR_PROJECT; the Reader's
   workflow `copr` job needs its project name changed (a workflow paste).
-- Testing: `tools/mock-jellyfin.py` (also `--legacy` for 10.8 routes).
+- Testing: `tools/mock-jellyfin.py` (also `--legacy` for 10.8 routes,
+  `--many N` for a big library). The owner's laptop has no Xvfb package:
+  `dnf download xorg-x11-server-Xvfb xdotool libxdo` and unpack them
+  with rpm2cpio into the scratchpad; run the app with XDG_CONFIG_HOME
+  etc. pointed there (never the owner's real config), and give the
+  window focus with `xdotool windowfocus` or keys go nowhere (no WM).
   Seen working in Xvfb against it: sign-in (Quick Connect), home, library
   grid, show/movie pages, search, settings, playback with reports,
   autoplay of the next episode, stop on closing mpv, .deb install.
@@ -74,9 +79,18 @@ Last updated 2026-10-21.
   library), library grids (sort, paging), details (movie/show/episode,
   seasons, episodes, cast, similar, watched/favourite), search, local
   folders, settings drawer, Jellyfin theme.
-- Playback: mpv in its own window (libmpv client API, `src/mpv.rs`),
-  direct play only, Jellyfin's default audio/subtitle tracks mapped to
-  mpv ids, external subs added, progress reports, autoplay next episode.
+- Playback: inside the app's window since 2026-10-21 (mpv render API,
+  `src/video.rs`, controls in `src/app/player.rs` modelled on Jellyfin
+  Media Player: seek bar, ±10/30 s, prev/next episode, volume, audio,
+  subtitle and speed menus, full screen, Skip Intro button, auto-hiding,
+  jellyfin-web keys). "Play in mpv's own window" setting keeps the old
+  way. Direct play only, Jellyfin's default tracks mapped to mpv ids,
+  external subs, progress reports, autoplay next episode.
+- 2026-10-21 (owner's requests from using the alpha on a laptop): smooth
+  and kinetic scrolling (`src/input.rs`), desktop accent colour with a
+  Jellyfin-blue override, sidebar closed by default and closed by any
+  click on the page, library grid filling the width and built only where
+  visible (big libraries stuttered), A–Z bar, library search.
 - Intro Skipper: media segments (10.10+) or the old plugin endpoint;
   mpv OSD prompt "Skip Intro: press S or Enter" (setting: ask / auto /
   off). Tested against the mock in both server modes.
@@ -87,5 +101,7 @@ Last updated 2026-10-21.
   ships `libmpv-2.dll`. A file given on the command line plays only once
   the window has opened (starting mpv's renderer while the app's was
   starting crashed Mesa).
-- Not yet: embedded video (see docs/DEVELOPING.md "Embedding"), an
-  in-app track picker, transcoding fallback, in-app updates.
+- Not yet: transcoding fallback, in-app updates, zero-copy video
+  (dmabuf). Embedded video seen working only in Xvfb (OpenGL through
+  llvmpipe); not yet on the owner's GPU, Wayland, NVIDIA or Windows
+  (software renderer there).

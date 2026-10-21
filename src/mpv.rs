@@ -1,21 +1,26 @@
 //! A small binding to libmpv's client API, and the player built on it.
 //!
-//! mpv opens and draws its own window (with its own on-screen controller),
-//! decodes, and handles every key and mouse binding a user knows from mpv.
-//! The app tells it what to play and reads back where it is: a background
-//! thread waits on mpv's events and keeps a [`State`] the UI polls.
+//! Usually mpv draws into the app's window through its render API (see
+//! `video.rs`), and the app draws the controls. In a window of its own
+//! (macOS, or as a setting) mpv opens and draws its own window, with its
+//! own on-screen controller and every key binding a user knows from mpv.
+//! Either way the app tells it what to play and reads back where it is: a
+//! background thread waits on mpv's events and keeps a [`State`] the UI
+//! polls.
 //!
 //! Only the handful of client API calls the app needs are bound here, all
 //! present since libmpv 1.x, so any distro's libmpv works. libmpv is
 //! loaded when first needed (see [`Api`]), not linked.
 
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+
+use crate::video::{RenderContext, RenderParam};
 
 // ── FFI ─────────────────────────────────────────────────────────────────────
 
 #[repr(C)]
-struct MpvHandle {
+pub struct MpvHandle {
     _private: [u8; 0],
 }
 
@@ -47,6 +52,7 @@ struct MpvEventEndFile {
 }
 
 const FORMAT_NONE: c_int = 0;
+const FORMAT_STRING: c_int = 1;
 const FORMAT_FLAG: c_int = 3;
 const FORMAT_DOUBLE: c_int = 5;
 
@@ -77,8 +83,20 @@ struct Api {
     wait_event: unsafe extern "C" fn(*mut MpvHandle, f64) -> *mut MpvEvent,
     error_string: unsafe extern "C" fn(c_int) -> *const c_char,
     client_api_version: unsafe extern "C" fn() -> std::ffi::c_ulong,
+    /// The render API, for drawing into the app's window (libmpv 0.28+).
+    render: Option<RenderApi>,
     /// Kept loaded for as long as the app runs.
     _lib: libloading::Library,
+}
+
+/// libmpv's render API: mpv draws video frames where the app asks.
+pub struct RenderApi {
+    pub create: unsafe extern "C" fn(*mut *mut RenderContext, *mut MpvHandle, *mut RenderParam) -> c_int,
+    pub set_update_callback: unsafe extern "C" fn(*mut RenderContext, Option<extern "C" fn(*mut c_void)>, *mut c_void),
+    pub update: unsafe extern "C" fn(*mut RenderContext) -> u64,
+    pub render: unsafe extern "C" fn(*mut RenderContext, *mut RenderParam) -> c_int,
+    pub report_swap: unsafe extern "C" fn(*mut RenderContext),
+    pub free: unsafe extern "C" fn(*mut RenderContext),
 }
 
 /// Where libmpv is looked for, newest first.
@@ -162,7 +180,23 @@ fn load() -> Result<Api, String> {
                     *lib.get($name).map_err(|e| format!("{name}: {e}"))?
                 };
             }
+            macro_rules! opt {
+                ($name:literal) => {
+                    lib.get($name).ok().map(|s| *s)
+                };
+            }
+            let render = (|| {
+                Some(RenderApi {
+                    create: opt!(b"mpv_render_context_create\0")?,
+                    set_update_callback: opt!(b"mpv_render_context_set_update_callback\0")?,
+                    update: opt!(b"mpv_render_context_update\0")?,
+                    render: opt!(b"mpv_render_context_render\0")?,
+                    report_swap: opt!(b"mpv_render_context_report_swap\0")?,
+                    free: opt!(b"mpv_render_context_free\0")?,
+                })
+            })();
             let api = Api {
+                render,
                 create: sym!(b"mpv_create\0"),
                 initialize: sym!(b"mpv_initialize\0"),
                 terminate_destroy: sym!(b"mpv_terminate_destroy\0"),
@@ -197,6 +231,11 @@ fn loaded() -> &'static Api {
 fn error_string(code: c_int) -> String {
     // SAFETY: mpv returns a static string for every error code.
     unsafe { CStr::from_ptr((loaded().error_string)(code)) }.to_string_lossy().into_owned()
+}
+
+/// mpv's text for an error code.
+pub fn error_text(code: c_int) -> String {
+    error_string(code)
 }
 
 fn cstr(s: &str) -> CString {
@@ -301,6 +340,86 @@ pub struct State {
     pub skip_presses: u64,
     /// The last error mpv reported for a file.
     pub error: Option<String>,
+    /// 0–100 (and up to 130, mpv's boost).
+    pub volume: f64,
+    pub muted: bool,
+    pub speed: f64,
+    /// Waiting for the network.
+    pub buffering: bool,
+    /// The file's audio, video and subtitle tracks.
+    pub tracks: Vec<Track>,
+}
+
+/// One of a file's tracks, as mpv lists them.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct Track {
+    pub id: i64,
+    /// "video", "audio" or "sub".
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub title: Option<String>,
+    pub lang: Option<String>,
+    pub codec: Option<String>,
+    pub selected: bool,
+    pub external: bool,
+    #[serde(rename = "demux-channel-count")]
+    pub channels: Option<i64>,
+}
+
+impl Track {
+    /// "English · 5.1 · AAC" or "Commentary (Japanese) · OPUS".
+    pub fn label(&self) -> String {
+        let lang = self.lang.as_deref().map(language_name);
+        let mut parts: Vec<String> = Vec::new();
+        match (&self.title, &lang) {
+            (Some(t), Some(l)) if !t.to_lowercase().contains(&l.to_lowercase()) => parts.push(format!("{t} ({l})")),
+            (Some(t), _) => parts.push(t.clone()),
+            (None, Some(l)) => parts.push(l.clone()),
+            (None, None) => parts.push(format!("Track {}", self.id)),
+        }
+        if self.kind == "audio" {
+            match self.channels {
+                Some(1) => parts.push("Mono".into()),
+                Some(2) => parts.push("Stereo".into()),
+                Some(6) => parts.push("5.1".into()),
+                Some(8) => parts.push("7.1".into()),
+                _ => {}
+            }
+        }
+        if let (Some(c), false) = (&self.codec, self.kind == "sub" && self.title.is_some()) {
+            parts.push(c.to_uppercase());
+        }
+        parts.join(" · ")
+    }
+}
+
+/// English names for the language codes files usually carry.
+fn language_name(code: &str) -> String {
+    let name = match code {
+        "eng" | "en" => "English",
+        "jpn" | "ja" => "Japanese",
+        "spa" | "es" => "Spanish",
+        "fre" | "fra" | "fr" => "French",
+        "ger" | "deu" | "de" => "German",
+        "ita" | "it" => "Italian",
+        "por" | "pt" => "Portuguese",
+        "rus" | "ru" => "Russian",
+        "chi" | "zho" | "zh" => "Chinese",
+        "kor" | "ko" => "Korean",
+        "dut" | "nld" | "nl" => "Dutch",
+        "swe" | "sv" => "Swedish",
+        "nor" | "no" => "Norwegian",
+        "dan" | "da" => "Danish",
+        "fin" | "fi" => "Finnish",
+        "pol" | "pl" => "Polish",
+        "tur" | "tr" => "Turkish",
+        "ara" | "ar" => "Arabic",
+        "hin" | "hi" => "Hindi",
+        "und" => "Unknown",
+        other => return other.to_string(),
+    };
+    name.to_string()
 }
 
 /// An external subtitle file to add once its video has loaded.
@@ -334,6 +453,8 @@ pub struct Load {
 /// Options for the mpv instance.
 #[derive(Clone, Debug, Default)]
 pub struct Options {
+    /// Draw into the app's window rather than mpv's own.
+    pub embed: bool,
     pub fullscreen: bool,
     pub hwdec: bool,
     /// Holds `mpv.conf`, `input.conf` and `scripts/` for this app's mpv.
@@ -370,11 +491,19 @@ enum Event {
     Position(f64),
     Duration(f64),
     Paused(bool),
+    Volume(f64),
+    Muted(bool),
+    Speed(f64),
+    Buffering(bool),
+    /// mpv's track-list, as JSON.
+    Tracks(String),
     Message(Vec<String>),
 }
 
 struct Shared {
     backend: Box<dyn Backend>,
+    /// Frames for the app's window, when mpv draws there.
+    video: OnceLock<Arc<crate::video::Output>>,
     state: Mutex<State>,
     /// Subtitles for the file being loaded, added on FILE_LOADED.
     pending_subs: Mutex<Vec<ExternalSub>>,
@@ -382,13 +511,21 @@ struct Shared {
 
 impl Shared {
     fn new(backend: Box<dyn Backend>) -> Arc<Self> {
-        Arc::new(Shared { backend, state: Mutex::new(State::default()), pending_subs: Mutex::new(Vec::new()) })
+        Arc::new(Shared {
+            backend,
+            video: OnceLock::new(),
+            state: Mutex::new(State { volume: 100.0, speed: 1.0, ..State::default() }),
+            pending_subs: Mutex::new(Vec::new()),
+        })
     }
 
     /// Updates the state for one event; false once mpv has shut down.
     fn handle(&self, event: Event) -> bool {
         match event {
             Event::Shutdown => {
+                if let Some(video) = self.video.get() {
+                    video.quit();
+                }
                 self.state.lock().unwrap().closed = true;
                 return false;
             }
@@ -420,6 +557,14 @@ impl Shared {
             Event::Position(p) => self.state.lock().unwrap().position = p,
             Event::Duration(d) => self.state.lock().unwrap().duration = d,
             Event::Paused(p) => self.state.lock().unwrap().paused = p,
+            Event::Volume(v) => self.state.lock().unwrap().volume = v,
+            Event::Muted(m) => self.state.lock().unwrap().muted = m,
+            Event::Speed(v) => self.state.lock().unwrap().speed = v,
+            Event::Buffering(b) => self.state.lock().unwrap().buffering = b,
+            Event::Tracks(json) => match serde_json::from_str::<Vec<Track>>(&json) {
+                Ok(tracks) => self.state.lock().unwrap().tracks = tracks,
+                Err(e) => log::warn!("mpv's track list: {e}"),
+            },
             Event::Message(args) => {
                 if args.first().map(String::as_str) == Some(SKIP_MESSAGE) {
                     self.state.lock().unwrap().skip_presses += 1;
@@ -445,12 +590,49 @@ const SKIP_BINDINGS: &str = "s script-message nebula-skip\nS script-message nebu
 const OBS_TIME: u64 = 1;
 const OBS_DURATION: u64 = 2;
 const OBS_PAUSE: u64 = 3;
+const OBS_VOLUME: u64 = 4;
+const OBS_MUTE: u64 = 5;
+const OBS_TRACKS: u64 = 6;
+const OBS_BUFFERING: u64 = 7;
+const OBS_SPEED: u64 = 8;
+
+/// What the player follows, with the format libmpv reports it in.
+const OBSERVED: [(u64, &str, c_int); 8] = [
+    (OBS_TIME, "time-pos", FORMAT_DOUBLE),
+    (OBS_DURATION, "duration", FORMAT_DOUBLE),
+    (OBS_PAUSE, "pause", FORMAT_FLAG),
+    (OBS_VOLUME, "volume", FORMAT_DOUBLE),
+    (OBS_MUTE, "mute", FORMAT_FLAG),
+    (OBS_TRACKS, "track-list", FORMAT_STRING),
+    (OBS_BUFFERING, "paused-for-cache", FORMAT_FLAG),
+    (OBS_SPEED, "speed", FORMAT_DOUBLE),
+];
 
 /// mpv's options for this app. The user's own mpv.conf (read from
 /// `config_dir`) overrides them. The last flag marks options only libmpv
 /// gets: the mpv program refuses to start on one it doesn't know.
 fn options(opts: &Options) -> Vec<(&'static str, String, bool)> {
     let o = |k: &'static str, v: &str| (k, v.to_string(), false);
+    if opts.embed {
+        return vec![
+            o("config-dir", &opts.config_dir.to_string_lossy()),
+            o("config", "yes"),
+            o("terminal", "no"),
+            // Frames go to the render API; the app draws the controls and
+            // handles the keys.
+            o("vo", "libmpv"),
+            o("osc", "no"),
+            o("input-default-bindings", "no"),
+            o("input-vo-keyboard", "no"),
+            o("idle", "yes"),
+            o("keep-open", "no"),
+            o("ytdl", "no"),
+            // Decoded on the GPU and copied back: the off-screen renderer
+            // has no display to share GPU frames through.
+            o("hwdec", if opts.hwdec { "auto-copy-safe" } else { "no" }),
+            o("watch-later-directory", &opts.watch_later_dir.to_string_lossy()),
+        ];
+    }
     vec![
         o("config-dir", &opts.config_dir.to_string_lossy()),
         o("config", "yes"),
@@ -485,6 +667,12 @@ pub fn check() -> Result<String, String> {
     }
     api()?;
     Ok(api_version().unwrap_or_default())
+}
+
+/// Whether videos can only play in mpv's own window: the mpv program
+/// (macOS) has no way to draw into the app's.
+pub fn separate_only() -> bool {
+    use_ipc()
 }
 
 /// Whether mpv runs as its own program (macOS, or `NEBULA_MPV=ipc`).
@@ -522,12 +710,18 @@ impl Player {
         if r < 0 {
             return Err(format!("couldn't start mpv: {}", error_string(r)));
         }
-        handle.observe(OBS_TIME, "time-pos", FORMAT_DOUBLE);
-        handle.observe(OBS_DURATION, "duration", FORMAT_DOUBLE);
-        handle.observe(OBS_PAUSE, "pause", FORMAT_FLAG);
+        for (id, name, format) in OBSERVED {
+            handle.observe(id, name, format);
+        }
 
         let raw = RawHandle(handle.0);
         let shared = Shared::new(Box::new(handle));
+        if opts.embed {
+            let render = api.render.as_ref().ok_or("this libmpv is too old to draw inside the app")?;
+            let keep: Arc<dyn Send + Sync> = shared.clone();
+            let video = crate::video::start(render, raw.0, keep)?;
+            let _ = shared.video.set(video);
+        }
         let events = shared.clone();
         std::thread::Builder::new()
             .name("mpv-events".into())
@@ -558,6 +752,42 @@ impl Player {
 
     pub fn state(&self) -> State {
         self.shared.state.lock().unwrap().clone()
+    }
+
+    /// Its frames, when mpv draws into the app's window.
+    pub fn video(&self) -> Option<Arc<crate::video::Output>> {
+        self.shared.video.get().cloned()
+    }
+
+    pub fn set_paused(&self, paused: bool) {
+        let _ = self.shared.backend.set("pause", if paused { "yes" } else { "no" });
+    }
+
+    /// Moves `seconds` forward (or back, when negative).
+    pub fn seek_by(&self, seconds: f64) {
+        let _ = self.shared.backend.command(&["seek", &format!("{seconds:.3}"), "relative"]);
+    }
+
+    pub fn set_volume(&self, volume: f64) {
+        let _ = self.shared.backend.set("volume", &format!("{:.0}", volume.clamp(0.0, 130.0)));
+    }
+
+    pub fn set_muted(&self, muted: bool) {
+        let _ = self.shared.backend.set("mute", if muted { "yes" } else { "no" });
+    }
+
+    pub fn set_speed(&self, speed: f64) {
+        let _ = self.shared.backend.set("speed", &format!("{speed:.2}"));
+    }
+
+    /// Picks the audio track with mpv's id.
+    pub fn set_audio(&self, id: i64) {
+        let _ = self.shared.backend.set("aid", &id.to_string());
+    }
+
+    /// Picks the subtitle track with mpv's id; `None` turns them off.
+    pub fn set_subtitle(&self, id: Option<i64>) {
+        let _ = self.shared.backend.set("sid", &id.map_or("no".to_string(), |i| i.to_string()));
     }
 
     /// Jumps to `seconds` into the file.
@@ -648,10 +878,24 @@ fn event_loop(shared: Arc<Shared>, h: RawHandle) {
                 // SAFETY: PROPERTY_CHANGE events carry an mpv_event_property
                 // whose data matches the format asked for.
                 let prop = unsafe { &*(ev.data as *const MpvEventProperty) };
+                let double = || unsafe { *(prop.data as *const f64) };
+                let flag = || unsafe { *(prop.data as *const c_int) } != 0;
                 match (ev.reply_userdata, prop.format) {
-                    (OBS_TIME, FORMAT_DOUBLE) => Event::Position(unsafe { *(prop.data as *const f64) }),
-                    (OBS_DURATION, FORMAT_DOUBLE) => Event::Duration(unsafe { *(prop.data as *const f64) }),
-                    (OBS_PAUSE, FORMAT_FLAG) => Event::Paused(unsafe { *(prop.data as *const c_int) } != 0),
+                    (OBS_TIME, FORMAT_DOUBLE) => Event::Position(double()),
+                    (OBS_DURATION, FORMAT_DOUBLE) => Event::Duration(double()),
+                    (OBS_PAUSE, FORMAT_FLAG) => Event::Paused(flag()),
+                    (OBS_VOLUME, FORMAT_DOUBLE) => Event::Volume(double()),
+                    (OBS_MUTE, FORMAT_FLAG) => Event::Muted(flag()),
+                    (OBS_SPEED, FORMAT_DOUBLE) => Event::Speed(double()),
+                    (OBS_BUFFERING, FORMAT_FLAG) => Event::Buffering(flag()),
+                    (OBS_TRACKS, FORMAT_STRING) => {
+                        // SAFETY: STRING properties carry a char*.
+                        let text = unsafe { *(prop.data as *const *const c_char) };
+                        if text.is_null() {
+                            continue;
+                        }
+                        Event::Tracks(unsafe { CStr::from_ptr(text) }.to_string_lossy().into_owned())
+                    }
                     (_, FORMAT_NONE) | _ => continue,
                 }
             }
@@ -674,7 +918,8 @@ mod ipc {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    use super::{options, Backend, End, Event, Options, Shared, OBS_DURATION, OBS_PAUSE, OBS_TIME};
+    use super::{options, Backend, End, Event, Options, Shared, OBSERVED};
+    use super::{OBS_BUFFERING, OBS_DURATION, OBS_MUTE, OBS_PAUSE, OBS_SPEED, OBS_TIME, OBS_TRACKS, OBS_VOLUME};
 
     struct Ipc {
         socket: Mutex<UnixStream>,
@@ -779,7 +1024,7 @@ mod ipc {
         };
         let reader = socket.try_clone().map_err(|e| e.to_string())?;
         let ipc = Ipc { socket: Mutex::new(socket), child: Mutex::new(child), next_id: AtomicU64::new(1) };
-        for (id, name) in [(OBS_TIME, "time-pos"), (OBS_DURATION, "duration"), (OBS_PAUSE, "pause")] {
+        for (id, name, _) in OBSERVED {
             ipc.send(serde_json::json!(["observe_property", id, name]))?;
         }
         let shared = Shared::new(Box::new(ipc));
@@ -832,6 +1077,13 @@ mod ipc {
                     OBS_TIME => Event::Position(data.as_f64()?),
                     OBS_DURATION => Event::Duration(data.as_f64()?),
                     OBS_PAUSE => Event::Paused(data.as_bool()?),
+                    OBS_VOLUME => Event::Volume(data.as_f64()?),
+                    OBS_MUTE => Event::Muted(data.as_bool()?),
+                    OBS_SPEED => Event::Speed(data.as_f64()?),
+                    OBS_BUFFERING => Event::Buffering(data.as_bool()?),
+                    // Over IPC it arrives as JSON already: passed on as text,
+                    // the same as libmpv's.
+                    OBS_TRACKS => Event::Tracks(data.to_string()),
                     _ => return None,
                 }
             }
@@ -865,6 +1117,20 @@ mod tests {
         );
         assert_eq!(parse(r#"{"event":"client-message","args":["nebula-skip"]}"#), Some(Event::Message(vec!["nebula-skip".into()])));
         assert_eq!(parse(r#"{"request_id":4,"error":"success","data":null}"#), None);
+    }
+
+    #[test]
+    fn track_list_parses() {
+        let json = r#"[{"id":1,"type":"video","codec":"h264","selected":true},
+            {"id":1,"type":"audio","lang":"eng","codec":"aac","demux-channel-count":6,"selected":true},
+            {"id":2,"type":"audio","lang":"jpn","title":"Commentary","codec":"opus"},
+            {"id":1,"type":"sub","lang":"eng","external":true,"title":"English SDH"}]"#;
+        let tracks: Vec<Track> = serde_json::from_str(json).unwrap();
+        assert_eq!(tracks.len(), 4);
+        assert_eq!(tracks[1].label(), "English · 5.1 · AAC");
+        assert_eq!(tracks[2].label(), "Commentary (Japanese) · OPUS");
+        assert_eq!(tracks[3].label(), "English SDH");
+        assert!(tracks[3].external && !tracks[3].selected);
     }
 
     #[test]

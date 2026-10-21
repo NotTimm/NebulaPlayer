@@ -59,7 +59,17 @@ impl App {
 
         let playback = widget::settings::section()
             .title("Playback (mpv)")
-            .add(widget::settings::item("Start full screen", widget::toggler(s.fullscreen).on_toggle(Message::SetFullscreen)))
+            .add(widget::settings::item("Start full screen", widget::toggler(s.fullscreen).on_toggle(Message::SetFullscreen)));
+        // macOS always plays in mpv's own window.
+        let playback = if crate::mpv::separate_only() {
+            playback
+        } else {
+            playback.add(widget::settings::item(
+                "Play in mpv's own window",
+                widget::toggler(s.separate_window).on_toggle(Message::SetSeparateWindow),
+            ))
+        };
+        let playback = playback
             .add(widget::settings::item("Hardware decoding", widget::toggler(s.hwdec).on_toggle(Message::SetHwdec)))
             .add(widget::settings::item(
                 "Play the next episode",

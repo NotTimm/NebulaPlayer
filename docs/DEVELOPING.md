@@ -39,6 +39,7 @@ installed, a short test video for every item.
 ```fish
 python3 tools/mock-jellyfin.py 8096
 # then connect the app to localhost:8096, user "demo", any password
+python3 tools/mock-jellyfin.py 8096 --many 400   # a big movie library
 ```
 
 ## How it's put together
@@ -50,17 +51,24 @@ python3 tools/mock-jellyfin.py 8096
   thread, which the app owns. So there the app runs the mpv program and
   drives it over `--input-ipc-server` (JSON lines). Both take the same
   commands and options; `NEBULA_MPV=ipc` uses the IPC backend anywhere,
-  for testing, and `NEBULA_MPV_BIN` picks the mpv program. mpv owns its own
-  window and on-screen controller; an event thread keeps a `State`
-  that the UI polls twice a second.
+  for testing, and `NEBULA_MPV_BIN` picks the mpv program. An event
+  thread keeps a `State` that the UI polls.
+- `src/video.rs`: video inside the app's window (see "Embedding").
+- `src/input.rs`: browser-like scrolling around every page (wheel steps
+  glide, touchpad swipes keep going after the fingers lift) and the
+  click-anywhere that closes the sidebar.
 - `src/jellyfin.rs`: the API client (sign-in, home sections, browsing,
   images, PlaybackInfo, playback reports).
 - `src/images.rs`: images are fetched at display size, cached on disk
   (keyed by the server's image tag) and decoded off the UI thread.
 - `src/app.rs`: state, messages and navigation. The pages live in
   `src/app/` (`home`, `library`, `details`, `search`, `local`, `signin`,
-  `settings_view`, with shared cards in `widgets`).
-- `src/theme.rs`: the Jellyfin colours and gradients.
+  `settings_view`, `player`, with shared cards in `widgets`). A library
+  builds only the grid rows on screen and fetches pages wherever the user
+  scrolls or jumps (A–Z bar, `nameLessThan`).
+- `src/theme.rs`: the Jellyfin colours and gradients. The accent is the
+  desktop's (COSMIC's config at start, then the XDG settings portal,
+  which KDE and GNOME 47+ also answer), unless set to Jellyfin blue.
 
 ### Playback and progress
 
@@ -85,12 +93,26 @@ The section is disabled again once the segment is over, so S takes
 screenshots otherwise. The mock server has an intro (2–8 s) and credits
 (15–20 s) on every episode.
 
-### Embedding (later)
+### Embedding
 
-Upstream libmpv's render API only does OpenGL and software rendering,
-while libcosmic draws with wgpu. So for now mpv keeps its own window. The
-planned order is `--wid` embedding on Windows/X11, then a Wayland
-subsurface fed by mpv's OpenGL output through dmabuf.
+Video plays inside the app's window (unless "Play in mpv's own window" is
+on, or on macOS). libmpv's render API only does OpenGL and software
+rendering, while libcosmic draws with wgpu, so `src/video.rs` has a
+render thread with an off-screen EGL context (Mesa's surfaceless
+platform, else an EGL device for NVIDIA, else the default display): mpv
+draws each frame at the size it's shown into a texture, the thread reads
+it back, and a wgpu shader widget uploads and draws it. Without EGL
+(Windows, or a failure) mpv's software renderer fills the buffer instead.
+mpv gets `vo=libmpv`, `hwdec=auto-copy-safe` (there's no display to share
+GPU frames through), no OSC and no key bindings: `src/app/player.rs`
+draws the controls and handles jellyfin-web's keys.
+
+The cost is a copy per frame (8 MB at 1080p; frames are capped at 2560
+px across). Handing the texture over as a dmabuf (or a Wayland
+subsurface, as libcosmic's `sctk_subsurface` example does) would remove
+it; worth it only if the copy shows up.
+
+`NEBULA_MPV=ipc` still runs the mpv program in its own window.
 
 ## The libcosmic fork
 

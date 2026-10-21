@@ -244,3 +244,60 @@ pub fn letter_button(current: bool) -> cosmic::theme::Button {
         pressed: Box::new(move |_, t| pressed(t)),
     }
 }
+
+/// Behind the video, and around it when it's letterboxed.
+pub fn black(_theme: &cosmic::Theme) -> widget::container::Style {
+    widget::container::Style { background: Some(Background::Color(Color::BLACK)), ..Default::default() }
+}
+
+/// Text and icons over the video: white, whatever the theme.
+pub fn on_video(_theme: &cosmic::Theme) -> widget::container::Style {
+    widget::container::Style { text_color: Some(Color::WHITE), icon_color: Some(Color::WHITE), ..Default::default() }
+}
+
+/// The shade behind the player's title bar (`top`) or its controls, fading
+/// into the video.
+pub fn player_fade(_theme: &cosmic::Theme, top: bool) -> widget::container::Style {
+    let dark = |a: f32| Color { a, ..Color::BLACK };
+    // At PI the gradient runs top to bottom, at 0 bottom to top.
+    let angle = if top { Radians(std::f32::consts::PI) } else { Radians(0.0) };
+    widget::container::Style {
+        background: Some(Background::Gradient(Gradient::Linear(
+            Linear::new(angle).add_stop(0.0, dark(0.8)).add_stop(0.6, dark(0.45)).add_stop(1.0, dark(0.0)),
+        ))),
+        text_color: Some(Color::WHITE),
+        icon_color: Some(Color::WHITE),
+        ..Default::default()
+    }
+}
+
+/// A menu over the video (audio, subtitles, speed).
+pub fn player_menu(_theme: &cosmic::Theme) -> widget::container::Style {
+    widget::container::Style {
+        background: Some(Background::Color(Color { a: 0.88, ..color(SURFACE, 1.0) })),
+        text_color: Some(Color::WHITE),
+        icon_color: Some(Color::WHITE),
+        border: Border { radius: 10.0.into(), ..Default::default() },
+        ..Default::default()
+    }
+}
+
+/// A button over the video: white, a soft light behind it on hover.
+pub fn overlay_button() -> cosmic::theme::Button {
+    fn style(highlight: f32, alpha: f32) -> widget::button::Style {
+        let white = Color { a: alpha, ..Color::WHITE };
+        widget::button::Style {
+            background: (highlight > 0.0).then(|| Background::Color(Color { a: highlight, ..Color::WHITE })),
+            border_radius: 20.0.into(),
+            text_color: Some(white),
+            icon_color: Some(white),
+            ..widget::button::Style::new()
+        }
+    }
+    cosmic::theme::Button::Custom {
+        active: Box::new(|_, _| style(0.0, 1.0)),
+        disabled: Box::new(|_| style(0.0, 0.35)),
+        hovered: Box::new(|_, _| style(0.14, 1.0)),
+        pressed: Box::new(|_, _| style(0.24, 1.0)),
+    }
+}
