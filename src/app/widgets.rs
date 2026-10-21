@@ -113,8 +113,8 @@ fn overlaid<'a>(pic: Element<'a, Message>, item: &Item, w: f32, h: f32) -> Eleme
 
 fn clickable<'a>(content: impl Into<Element<'a, Message>>, msg: Message) -> Element<'a, Message> {
     widget::button::custom(content)
-        .class(cosmic::theme::Button::Image)
-        .padding(0)
+        .class(crate::theme::card_button())
+        .padding(6)
         .on_press(msg)
         .into()
 }

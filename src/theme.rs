@@ -134,3 +134,24 @@ pub fn badge(theme: &cosmic::Theme) -> widget::container::Style {
         ..Default::default()
     }
 }
+
+/// A clickable card: plain text colours, a soft highlight on hover.
+pub fn card_button() -> cosmic::theme::Button {
+    fn style(theme: &cosmic::Theme, highlight: f32) -> widget::button::Style {
+        let c = theme.cosmic();
+        let on_bg: Color = c.on_bg_color().into();
+        widget::button::Style {
+            background: (highlight > 0.0).then(|| Background::Color(Color { a: highlight, ..on_bg })),
+            border_radius: 8.0.into(),
+            text_color: Some(on_bg),
+            icon_color: Some(on_bg),
+            ..widget::button::Style::new()
+        }
+    }
+    cosmic::theme::Button::Custom {
+        active: Box::new(|_, t| style(t, 0.0)),
+        disabled: Box::new(|t| style(t, 0.0)),
+        hovered: Box::new(|_, t| style(t, 0.08)),
+        pressed: Box::new(|_, t| style(t, 0.14)),
+    }
+}

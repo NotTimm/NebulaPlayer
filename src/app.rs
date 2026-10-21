@@ -14,7 +14,7 @@ use cosmic::app::{Core, Task};
 use cosmic::dialog::file_chooser;
 use cosmic::iced::{time, Length, Subscription};
 use cosmic::widget::{self, icon, image::Handle, nav_bar};
-use cosmic::{executor, Application, Element};
+use cosmic::{executor, Application, ApplicationExt, Element};
 
 use crate::images::{self, Key};
 use crate::jellyfin::{self, Account, Accounts, ImageRef, Item, Report, SortBy};
@@ -769,7 +769,12 @@ impl Application for App {
             playback: None,
             error: None,
         };
-        let mut tasks = vec![app.use_account(account), app.scan_local()];
+        app.set_header_title("Nebula Player".into());
+        let title = match app.core.main_window_id() {
+            Some(id) => app.set_window_title("Nebula Player".into(), id),
+            None => Task::none(),
+        };
+        let mut tasks = vec![title, app.use_account(account), app.scan_local()];
         // A file given on the command line plays right away.
         if let Some(path) = flags {
             tasks.push(app.play_local(path));

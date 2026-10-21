@@ -24,11 +24,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     images::prune(1024 * 1024 * 1024);
 
     let saved = settings::Settings::load();
-    let settings = Settings::default()
+    let mut settings = Settings::default()
         .size(Size::new(1280.0, 820.0))
         .theme(theme::build(saved.theme))
         // Windows and macOS draw their own title bar.
         .client_decorations(cfg!(target_os = "linux"));
+    if let Some(icons) = platform::fallback_icon_theme() {
+        settings = settings.default_icon_theme(icons);
+    }
 
     cosmic::app::run::<app::App>(settings, path)?;
     Ok(())

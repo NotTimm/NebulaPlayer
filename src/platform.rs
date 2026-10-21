@@ -96,3 +96,26 @@ pub fn open(target: &str) {
         log::warn!("could not open {target}: {e}");
     }
 }
+
+/// libcosmic looks icons up in COSMIC's theme only. Outside COSMIC that
+/// theme is often not installed, which would leave every icon blank, so the
+/// first of the usual themes that is installed is used instead.
+#[cfg(target_os = "linux")]
+pub fn fallback_icon_theme() -> Option<&'static str> {
+    let mut dirs: Vec<PathBuf> = vec![home_dir().join(".local/share/icons"), home_dir().join(".icons")];
+    let data = std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".into());
+    dirs.extend(data.split(':').filter(|d| !d.is_empty()).map(|d| PathBuf::from(d).join("icons")));
+    let installed = |name: &str| dirs.iter().any(|d| d.join(name).join("index.theme").exists());
+    if installed("Cosmic") {
+        return None;
+    }
+    let theme = ["breeze", "Adwaita", "Papirus", "elementary"].into_iter().find(|t| installed(t))?;
+    log::info!("COSMIC icons not installed; using {theme}");
+    Some(theme)
+}
+
+/// Windows and macOS use the icons bundled into libcosmic.
+#[cfg(not(target_os = "linux"))]
+pub fn fallback_icon_theme() -> Option<&'static str> {
+    None
+}
