@@ -13,6 +13,22 @@ pub enum ThemeChoice {
     System,
 }
 
+/// What happens at an intro, credits, recap or preview the server knows
+/// about (Jellyfin's media segments, from Intro Skipper and the like).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SkipMode {
+    /// mpv shows "Skip Intro: press S or Enter".
+    #[default]
+    Ask,
+    Auto,
+    Off,
+}
+
+impl SkipMode {
+    pub const ALL: [SkipMode; 3] = [SkipMode::Ask, SkipMode::Auto, SkipMode::Off];
+    pub const LABELS: [&'static str; 3] = ["Ask to skip", "Skip automatically", "Don't skip"];
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -25,6 +41,8 @@ pub struct Settings {
     pub hwdec: bool,
     /// Episodes play on into the next one.
     pub autoplay_next: bool,
+    /// Intros, credits and the like.
+    pub skip: SkipMode,
     /// Folders listed on the Local Files page.
     pub local_folders: Vec<PathBuf>,
 }
@@ -37,6 +55,7 @@ impl Default for Settings {
             fullscreen: false,
             hwdec: true,
             autoplay_next: true,
+            skip: SkipMode::Ask,
             local_folders: Vec::new(),
         }
     }

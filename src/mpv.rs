@@ -35,6 +35,12 @@ struct MpvEventProperty {
 }
 
 #[repr(C)]
+struct MpvEventClientMessage {
+    num_args: c_int,
+    args: *const *const c_char,
+}
+
+#[repr(C)]
 struct MpvEventEndFile {
     reason: c_int,
     error: c_int,
@@ -48,6 +54,7 @@ const EVENT_SHUTDOWN: c_int = 1;
 const EVENT_START_FILE: c_int = 6;
 const EVENT_END_FILE: c_int = 7;
 const EVENT_FILE_LOADED: c_int = 8;
+const EVENT_CLIENT_MESSAGE: c_int = 16;
 const EVENT_PROPERTY_CHANGE: c_int = 22;
 
 const END_EOF: c_int = 0;
@@ -244,6 +251,8 @@ pub struct State {
     pub ended: Option<End>,
     /// mpv's window was closed (or `quit`): the player is gone.
     pub closed: bool,
+    /// Counts presses of the skip key while a skip prompt is up.
+    pub skip_presses: u64,
     /// The last error mpv reported for a file.
     pub error: Option<String>,
 }
@@ -297,6 +306,13 @@ struct Shared {
 pub struct Player {
     shared: Arc<Shared>,
 }
+
+/// The input section holding the skip keys (see [`Player::skip_keys`]).
+const SKIP_SECTION: &str = "nebula-skip";
+/// What the skip keys send back: a `script-message` reaches every client,
+/// so it arrives here as a CLIENT_MESSAGE event.
+const SKIP_MESSAGE: &str = "nebula-skip";
+const SKIP_BINDINGS: &str = "s script-message nebula-skip\nS script-message nebula-skip\nENTER script-message nebula-skip\nKP_ENTER script-message nebula-skip";
 
 const OBS_TIME: u64 = 1;
 const OBS_DURATION: u64 = 2;
@@ -390,6 +406,31 @@ impl Player {
         self.shared.state.lock().unwrap().clone()
     }
 
+    /// Jumps to `seconds` into the file.
+    pub fn seek(&self, seconds: f64) {
+        let _ = self.shared.handle.command(&["seek", &format!("{seconds:.3}"), "absolute"]);
+    }
+
+    /// A message on mpv's on-screen display; an empty one clears it.
+    pub fn show_text(&self, text: &str, millis: u32) {
+        let _ = self.shared.handle.command(&["show-text", text, &millis.to_string()]);
+    }
+
+    /// Binds S and Enter to "skip" while a skip prompt is up, and back to
+    /// whatever they were (S takes screenshots) when it's gone.
+    pub fn skip_keys(&self, on: bool) {
+        let h = &self.shared.handle;
+        let result = if on {
+            h.command(&["define-section", SKIP_SECTION, SKIP_BINDINGS, "force"])
+                .and_then(|_| h.command(&["enable-section", SKIP_SECTION]))
+        } else {
+            h.command(&["disable-section", SKIP_SECTION])
+        };
+        if let Err(e) = result {
+            log::warn!("{e}");
+        }
+    }
+
     /// Closes the window and ends the player.
     pub fn quit(&self) {
         let _ = self.shared.handle.command(&["quit"]);
@@ -451,6 +492,17 @@ fn event_loop(shared: Arc<Shared>) {
                     s.error = Some(error_string(end.error));
                 }
                 s.ended = Some(reason);
+            }
+            EVENT_CLIENT_MESSAGE if !ev.data.is_null() => {
+                // SAFETY: CLIENT_MESSAGE events carry num_args C strings.
+                let msg = unsafe { &*(ev.data as *const MpvEventClientMessage) };
+                let first = (msg.num_args > 0 && !msg.args.is_null())
+                    .then(|| unsafe { *msg.args })
+                    .filter(|a| !a.is_null())
+                    .map(|a| unsafe { CStr::from_ptr(a) }.to_string_lossy().into_owned());
+                if first.as_deref() == Some(SKIP_MESSAGE) {
+                    shared.state.lock().unwrap().skip_presses += 1;
+                }
             }
             EVENT_PROPERTY_CHANGE if !ev.data.is_null() => {
                 // SAFETY: PROPERTY_CHANGE events carry an mpv_event_property

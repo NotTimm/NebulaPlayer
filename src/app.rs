@@ -19,7 +19,7 @@ use cosmic::{executor, Application, ApplicationExt, Element};
 use crate::images::{self, Key};
 use crate::jellyfin::{self, Account, Accounts, ImageRef, Item, Report, SortBy};
 use crate::mpv;
-use crate::settings::{Settings, ThemeChoice};
+use crate::settings::{Settings, SkipMode, ThemeChoice};
 
 mod details;
 mod home;
@@ -148,6 +148,15 @@ struct Playback {
     position: f64,
     paused: bool,
     last_report: Instant,
+    /// Intros, credits and so on in this file, from the server.
+    segments: Vec<jellyfin::Segment>,
+    /// The segment whose skip prompt is showing.
+    prompting: Option<usize>,
+    /// Segments skipped automatically already (seeking back into one
+    /// doesn't skip it again).
+    skipped: HashSet<usize>,
+    /// `mpv::State::skip_presses` already handled.
+    skip_presses: u64,
 }
 
 struct RemotePlay {
@@ -174,6 +183,7 @@ impl RemotePlay {
 pub struct PlayStart {
     item: Item,
     info: jellyfin::PlaybackInfo,
+    segments: Vec<jellyfin::Segment>,
     resume: bool,
 }
 
@@ -240,6 +250,7 @@ pub enum Message {
     SetFullscreen(bool),
     SetHwdec(bool),
     SetAutoplay(bool),
+    SetSkip(usize),
     OpenMpvConfig,
 
     DismissError,
@@ -553,6 +564,8 @@ impl App {
                     self.error = Some(e);
                     return stopped;
                 }
+                // A skip prompt left up by the last file.
+                p.skip_keys(false);
                 before
             }
             Err(e) => {
@@ -573,6 +586,10 @@ impl App {
             position: load.start.unwrap_or(0.0),
             paused: false,
             last_report: Instant::now(),
+            segments: start.segments,
+            prompting: None,
+            skipped: HashSet::new(),
+            skip_presses: self.player.as_ref().map(|p| p.state().skip_presses).unwrap_or(0),
         });
         stopped
     }
@@ -593,6 +610,7 @@ impl App {
                     self.error = Some(e);
                     return stopped;
                 }
+                p.skip_keys(false);
                 self.playback = Some(Playback {
                     remote: None,
                     loaded_before,
@@ -601,6 +619,10 @@ impl App {
                     position: 0.0,
                     paused: false,
                     last_report: Instant::now(),
+                    segments: Vec::new(),
+                    prompting: None,
+                    skipped: HashSet::new(),
+                    skip_presses: p.state().skip_presses,
                 });
             }
             Err(e) => self.error = Some(e),
@@ -625,6 +647,11 @@ impl App {
         }
         let paused_changed = pb.paused != state.paused;
         pb.paused = state.paused;
+        if state.loaded > pb.loaded_before && state.ended.is_none() {
+            if let Some(player) = &self.player {
+                skip_segments(player, pb, &state, self.settings.skip);
+            }
+        }
 
         let mut tasks = Vec::new();
         if let Some(remote) = &pb.remote {
@@ -704,6 +731,54 @@ impl App {
             let found = tokio::task::spawn_blocking(move || local::scan(&folders)).await.unwrap_or_default();
             Message::LocalScanned(found)
         })
+    }
+}
+
+/// Offers to skip (or skips) the intro, credits, recap or preview the
+/// position is in, and acts on the skip key.
+fn skip_segments(player: &mpv::Player, pb: &mut Playback, state: &mpv::State, mode: SkipMode) {
+    // The last half second of a segment isn't worth a prompt.
+    let current = pb.segments.iter().position(|s| state.position >= s.start && state.position < s.end - 0.5);
+    let skip_to = |player: &mpv::Player, seg: &jellyfin::Segment| {
+        // Credits that run to the end skip to the end, so the next
+        // episode starts.
+        let end = if state.duration > 0.0 { seg.end.min(state.duration) } else { seg.end };
+        player.seek(end);
+        player.show_text(&format!("Skipped {}", seg.kind.label().to_lowercase()), 1500);
+    };
+
+    let pressed = state.skip_presses > pb.skip_presses;
+    pb.skip_presses = state.skip_presses;
+
+    if pb.prompting.is_some() && pb.prompting != current {
+        // Left the segment (watched it, or seeked away).
+        player.skip_keys(false);
+        player.show_text("", 1);
+        pb.prompting = None;
+    }
+    let Some(i) = current else { return };
+    let seg = pb.segments[i];
+    match mode {
+        SkipMode::Off => {}
+        SkipMode::Auto => {
+            if pb.skipped.insert(i) {
+                skip_to(player, &seg);
+            }
+        }
+        SkipMode::Ask => {
+            if pressed && pb.prompting == Some(i) {
+                player.skip_keys(false);
+                pb.prompting = None;
+                skip_to(player, &seg);
+            } else if pb.prompting.is_none() {
+                pb.prompting = Some(i);
+                player.skip_keys(true);
+                // Shown until the segment ends (or for 15 s at most); it's
+                // cleared early if the user skips or leaves it.
+                let millis = ((seg.end - state.position).clamp(1.0, 15.0) * 1000.0) as u32;
+                player.show_text(&format!("Skip {}: press S or Enter", seg.kind.label()), millis);
+            }
+        }
     }
 }
 
@@ -1324,8 +1399,9 @@ impl App {
                             }
                             _ => item,
                         };
-                        let info = jellyfin::playback_info(&account, &item.id).await?;
-                        Ok(Box::new(PlayStart { item, info, resume }))
+                        let (info, segments) =
+                            tokio::join!(jellyfin::playback_info(&account, &item.id), jellyfin::segments(&account, &item.id));
+                        Ok(Box::new(PlayStart { item, info: info?, segments, resume }))
                     }
                     .await;
                     Message::PlaybackReady(result)
@@ -1415,6 +1491,10 @@ impl App {
             }
             Message::SetHwdec(on) => {
                 self.settings.hwdec = on;
+                self.settings.save();
+            }
+            Message::SetSkip(i) => {
+                self.settings.skip = SkipMode::ALL.get(i).copied().unwrap_or_default();
                 self.settings.save();
             }
             Message::SetAutoplay(on) => {

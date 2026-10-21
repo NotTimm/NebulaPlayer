@@ -22,6 +22,11 @@ rendering and audio passthrough.
   audio and subtitle preferences, loads external subtitles, plays the
   next episode, and reports progress back so other Jellyfin apps stay in
   sync.
+- **Skip intros and credits** found by the
+  [Intro Skipper](https://github.com/intro-skipper/intro-skipper) plugin
+  (or anything else that fills in Jellyfin's media segments): mpv asks
+  "Skip Intro: press S or Enter", or skips by itself if you prefer.
+  Recaps, previews and ads are covered too.
 - **Local files**: add folders and play anything in them. There's no
   scraping; metadata comes from Jellyfin only.
 - Jellyfin's dark look and blue-purple accent by default, or your

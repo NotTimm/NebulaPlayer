@@ -5,7 +5,7 @@ use cosmic::widget;
 use cosmic::Element;
 
 use super::{App, Message};
-use crate::settings::ThemeChoice;
+use crate::settings::{SkipMode, ThemeChoice};
 
 const THEME_LABELS: [&str; 2] = ["Jellyfin", "System (COSMIC)"];
 
@@ -53,6 +53,14 @@ impl App {
             .add(widget::settings::item(
                 "Play the next episode",
                 widget::toggler(s.autoplay_next).on_toggle(Message::SetAutoplay),
+            ))
+            .add(widget::settings::item(
+                "Intros and credits",
+                widget::dropdown(
+                    &SkipMode::LABELS[..],
+                    SkipMode::ALL.iter().position(|m| *m == s.skip),
+                    Message::SetSkip,
+                ),
             ))
             .add(widget::settings::item(
                 "mpv.conf, input.conf, scripts",

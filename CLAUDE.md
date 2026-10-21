@@ -58,6 +58,9 @@ Last updated 2026-10-21.
 - Playback: mpv in its own window (libmpv client API, `src/mpv.rs`),
   direct play only, Jellyfin's default audio/subtitle tracks mapped to
   mpv ids, external subs added, progress reports, autoplay next episode.
+- Intro Skipper: media segments (10.10+) or the old plugin endpoint;
+  mpv OSD prompt "Skip Intro: press S or Enter" (setting: ask / auto /
+  off). Tested against the mock in both server modes.
 - libmpv is loaded at run time (libloading), not linked; the Windows zip
   ships `libmpv-2.dll`. A file given on the command line plays only once
   the window has opened (starting mpv's renderer while the app's was

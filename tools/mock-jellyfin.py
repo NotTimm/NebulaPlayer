@@ -325,6 +325,26 @@ class Handler(BaseHTTPRequestHandler):
             if q.get("limit"):
                 eps = eps[: int(q["limit"])]
             return self.send(page(eps))
+        # Skippable parts of every episode (the test video is 20 s long): as
+        # Jellyfin 10.10+ media segments, or the old Intro Skipper plugin's
+        # endpoint for --legacy.
+        if len(parts) == 2 and parts[0] == "MediaSegments" and not LEGACY_ONLY:
+            items = []
+            if parts[1].startswith("ep-"):
+                items = [
+                    {"Id": "s1", "ItemId": parts[1], "Type": "Intro", "StartTicks": 2 * TICKS, "EndTicks": 8 * TICKS},
+                    {"Id": "s2", "ItemId": parts[1], "Type": "Outro", "StartTicks": 15 * TICKS, "EndTicks": 20 * TICKS},
+                ]
+            return self.send({"Items": items, "TotalRecordCount": len(items), "StartIndex": 0})
+        if len(parts) == 3 and parts[0] == "Episode" and parts[2] == "IntroSkipperSegments":
+            if not parts[1].startswith("ep-"):
+                return self.send({})
+            return self.send({
+                "Introduction": {"EpisodeId": parts[1], "Valid": True, "IntroStart": 2.0, "IntroEnd": 8.0,
+                                 "ShowSkipPromptAt": 0.0, "HideSkipPromptAt": 10.0},
+                "Credits": {"EpisodeId": parts[1], "Valid": True, "IntroStart": 15.0, "IntroEnd": 20.0,
+                            "ShowSkipPromptAt": 13.0, "HideSkipPromptAt": 20.0},
+            })
         if len(parts) == 3 and parts[0] == "Items" and parts[2] == "PlaybackInfo":
             return self.send({
                 "PlaySessionId": f"session-{int(time.time())}",

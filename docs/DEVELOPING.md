@@ -68,6 +68,18 @@ and on pause, and `/Stopped` with the last position. Jellyfin marks an
 item watched past 90 %. At the end of an episode the next one loads into
 the same mpv window.
 
+### Intros and credits
+
+`jellyfin::segments` reads Jellyfin's media segments (`/MediaSegments/{id}`,
+10.10+, where the Intro Skipper plugin puts what it finds). On a 404 it
+reads the older plugin's own `/Episode/{id}/IntroSkipperSegments`. During
+playback `skip_segments` (src/app.rs) shows mpv's OSD prompt and enables
+an input section binding S/Enter to `script-message nebula-skip`. That
+arrives as a CLIENT_MESSAGE event and counts in `State::skip_presses`.
+The section is disabled again once the segment is over, so S takes
+screenshots otherwise. The mock server has an intro (2–8 s) and credits
+(15–20 s) on every episode.
+
 ### Embedding (later)
 
 Upstream libmpv's render API only does OpenGL and software rendering,

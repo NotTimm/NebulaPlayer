@@ -947,6 +947,133 @@ impl MediaSource {
     }
 }
 
+/// A part of an episode or movie that can be skipped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SegmentKind {
+    Intro,
+    /// Credits (Jellyfin calls them Outro).
+    Credits,
+    Recap,
+    Preview,
+    Commercial,
+}
+
+impl SegmentKind {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "Intro" | "Introduction" => Some(SegmentKind::Intro),
+            "Outro" | "Credits" => Some(SegmentKind::Credits),
+            "Recap" => Some(SegmentKind::Recap),
+            "Preview" => Some(SegmentKind::Preview),
+            "Commercial" => Some(SegmentKind::Commercial),
+            _ => None,
+        }
+    }
+
+    /// What the skip prompt and notice call it.
+    pub fn label(self) -> &'static str {
+        match self {
+            SegmentKind::Intro => "Intro",
+            SegmentKind::Credits => "Credits",
+            SegmentKind::Recap => "Recap",
+            SegmentKind::Preview => "Preview",
+            SegmentKind::Commercial => "Ad",
+        }
+    }
+}
+
+/// Where a skippable part starts and ends, in seconds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Segment {
+    pub kind: SegmentKind,
+    pub start: f64,
+    pub end: f64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "PascalCase", default)]
+struct MediaSegmentDto {
+    #[serde(rename = "Type")]
+    kind: String,
+    start_ticks: i64,
+    end_ticks: i64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "PascalCase", default)]
+struct MediaSegmentPage {
+    items: Vec<MediaSegmentDto>,
+}
+
+/// The older Intro Skipper plugin's answer (Jellyfin 10.9 and before), in
+/// seconds.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "PascalCase", default)]
+struct IntroSkipperSegment {
+    valid: bool,
+    intro_start: f64,
+    intro_end: f64,
+}
+
+fn keep(mut segments: Vec<Segment>) -> Vec<Segment> {
+    // A few seconds aren't worth a prompt.
+    segments.retain(|s| s.end - s.start >= 1.0);
+    segments.sort_by(|a, b| a.start.total_cmp(&b.start));
+    segments
+}
+
+fn parse_media_segments(page: MediaSegmentPage) -> Vec<Segment> {
+    keep(
+        page.items
+            .into_iter()
+            .filter_map(|s| {
+                Some(Segment {
+                    kind: SegmentKind::parse(&s.kind)?,
+                    start: s.start_ticks as f64 / TICKS_PER_SECOND,
+                    end: s.end_ticks as f64 / TICKS_PER_SECOND,
+                })
+            })
+            .collect(),
+    )
+}
+
+fn parse_intro_skipper(map: HashMap<String, IntroSkipperSegment>) -> Vec<Segment> {
+    keep(
+        map.into_iter()
+            .filter(|(_, s)| s.valid)
+            .filter_map(|(name, s)| {
+                Some(Segment { kind: SegmentKind::parse(&name)?, start: s.intro_start, end: s.intro_end })
+            })
+            .collect(),
+    )
+}
+
+/// The parts of an item that can be skipped: Jellyfin's media segments
+/// (10.10+, filled in by Intro Skipper and similar plugins), else the older
+/// Intro Skipper plugin's own endpoint. None found, or no plugin: empty.
+pub async fn segments(account: &Account, item_id: &str) -> Vec<Segment> {
+    let url = format!(
+        "{}/MediaSegments/{item_id}?includeSegmentTypes=Intro&includeSegmentTypes=Outro&includeSegmentTypes=Recap&includeSegmentTypes=Preview&includeSegmentTypes=Commercial",
+        account.url
+    );
+    match get_json::<MediaSegmentPage>(&url, &account.auth()).await {
+        Ok(page) => return parse_media_segments(page),
+        Err(e) if !not_found(&e) => {
+            log::info!("no media segments for {item_id}: {e}");
+            return Vec::new();
+        }
+        Err(_) => {}
+    }
+    let url = format!("{}/Episode/{item_id}/IntroSkipperSegments", account.url);
+    match get_json::<HashMap<String, IntroSkipperSegment>>(&url, &account.auth()).await {
+        Ok(map) => parse_intro_skipper(map),
+        Err(e) => {
+            log::debug!("no Intro Skipper segments for {item_id}: {e}");
+            Vec::new()
+        }
+    }
+}
+
 /// A playback report's body.
 #[derive(Clone, Debug)]
 pub struct Report {
@@ -1066,6 +1193,39 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(movie.landscape().unwrap().kind, ImageKind::Backdrop);
+    }
+
+    #[test]
+    fn media_segments_parse_in_seconds_and_order() {
+        let page: MediaSegmentPage = serde_json::from_value(serde_json::json!({
+            "Items": [
+                {"Type": "Outro", "StartTicks": 12_000_000_000i64, "EndTicks": 13_000_000_000i64},
+                {"Type": "Intro", "StartTicks": 50_000_000, "EndTicks": 900_000_000},
+                {"Type": "Unknown", "StartTicks": 0, "EndTicks": 100_000_000},
+                {"Type": "Recap", "StartTicks": 0, "EndTicks": 5_000_000}
+            ],
+            "TotalRecordCount": 4
+        }))
+        .unwrap();
+        let s = parse_media_segments(page);
+        assert_eq!(
+            s,
+            vec![
+                Segment { kind: SegmentKind::Intro, start: 5.0, end: 90.0 },
+                Segment { kind: SegmentKind::Credits, start: 1200.0, end: 1300.0 },
+            ]
+        );
+    }
+
+    #[test]
+    fn old_intro_skipper_answers_parse() {
+        let map: HashMap<String, IntroSkipperSegment> = serde_json::from_value(serde_json::json!({
+            "Introduction": {"EpisodeId": "e", "Valid": true, "IntroStart": 12.5, "IntroEnd": 80.0,
+                             "ShowSkipPromptAt": 7.5, "HideSkipPromptAt": 22.5},
+            "Credits": {"EpisodeId": "e", "Valid": false, "IntroStart": 0.0, "IntroEnd": 0.0}
+        }))
+        .unwrap();
+        assert_eq!(parse_intro_skipper(map), vec![Segment { kind: SegmentKind::Intro, start: 12.5, end: 80.0 }]);
     }
 
     #[test]
