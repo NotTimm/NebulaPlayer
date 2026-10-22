@@ -48,8 +48,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut settings = Settings::default()
         .size(Size::new(1280.0, 820.0))
         .theme(theme::build(saved.theme, saved.accent, theme::desktop_accent()))
-        // Windows and macOS draw their own title bar.
-        .client_decorations(cfg!(target_os = "linux"));
+        // Windows, macOS and KDE draw their own title bar; a native frame
+        // doesn't round or shadow the content, so the window is opaque
+        // there (a transparent one flickered on Windows).
+        .client_decorations(!platform::native_titlebar())
+        .transparent(!platform::native_titlebar());
     if let Some(icons) = platform::fallback_icon_theme() {
         settings = settings.default_icon_theme(icons);
     }

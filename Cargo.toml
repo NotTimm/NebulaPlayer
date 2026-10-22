@@ -38,6 +38,15 @@ ashpd = { version = "0.12.3", default-features = false, features = ["tokio"] }
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 libcosmic = { git = "https://github.com/NotTimm/libcosmic.git", rev = "cd86f68873413a5340345a17fe8517f51a134d5d", default-features = false, features = ["rfd"] }
 
+[target.'cfg(windows)'.dependencies]
+# The title bar's icon and colours (src/app/window_frame.rs).
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
 [target.'cfg(windows)'.build-dependencies]
 # Embeds the icon and version info in the .exe (see build.rs).
 winresource = "0.1"

@@ -31,6 +31,8 @@ mod search;
 mod settings_view;
 mod signin;
 mod widgets;
+#[cfg_attr(not(windows), allow(dead_code))] // the title bar is only set on Windows
+mod window_frame;
 
 pub use library::{LibraryMsg, LibraryPage};
 pub use player::{PlayerMsg, PlayerUi};
@@ -303,6 +305,10 @@ pub struct App {
     /// setting up its renderer while the app sets up its own has crashed
     /// graphics drivers.
     startup_file: Option<PathBuf>,
+    /// The Windows title bar last set (`window_frame`); `None` until the
+    /// window is up and has its icon.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    frame: Option<window_frame::Frame>,
     error: Option<String>,
 }
 
@@ -778,6 +784,21 @@ impl App {
         Task::batch(tasks)
     }
 
+    /// Windows: gives the title bar the app's icon and the theme's
+    /// colours, once the window is up and again whenever they change.
+    #[cfg(windows)]
+    fn sync_frame(&mut self) -> Task<Message> {
+        let theme = crate::theme::build(self.settings.theme, self.settings.accent, self.desktop_accent);
+        let frame = window_frame::Frame::of(&theme);
+        if self.frame == Some(frame) {
+            return Task::none();
+        }
+        let Some(id) = self.core.main_window_id() else { return Task::none() };
+        let icon = self.frame.is_none();
+        self.frame = Some(frame);
+        window_frame::apply(id, frame, icon)
+    }
+
     fn apply_theme(&self) -> Task<Message> {
         cosmic::command::set_theme(crate::theme::build(self.settings.theme, self.settings.accent, self.desktop_accent))
     }
@@ -962,9 +983,19 @@ impl Application for App {
             player_ui: PlayerUi::default(),
             window_width: 1280.0,
             startup_file: flags,
+            frame: None,
             error: None,
         };
         app.set_header_title("Nebula Player".into());
+        if crate::platform::native_titlebar() {
+            // The system title bar has the window buttons and title, so
+            // libcosmic's header bar becomes a plain toolbar.
+            let window = &mut app.core.window;
+            window.show_close = false;
+            window.show_maximize = false;
+            window.show_minimize = false;
+            window.sharp_corners = true;
+        }
         // The sidebar opens from the header's button, over the page.
         app.core.nav_bar_set_toggled(false);
         let title = match app.core.main_window_id() {
@@ -1088,7 +1119,10 @@ impl Application for App {
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
         let task = self.handle(message);
-        self.with_snap(task)
+        let task = self.with_snap(task);
+        #[cfg(windows)]
+        let task = Task::batch([task, self.sync_frame()]);
+        task
     }
 
     fn view(&self) -> Element<'_, Self::Message> {

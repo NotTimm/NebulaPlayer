@@ -3372,6 +3372,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "url",
+ "windows-sys 0.61.2",
  "winresource",
 ]
 

@@ -100,6 +100,20 @@ pub fn open(target: &str) {
 /// libcosmic looks icons up in COSMIC's theme only. Outside COSMIC that
 /// theme is often not installed, which would leave every icon blank, so the
 /// first of the usual themes that is installed is used instead.
+/// Whether the window has the system's own title bar (title, icon and
+/// window buttons) instead of libcosmic's header bar buttons, as in Nebula
+/// Reader: always on Windows and macOS, and on KDE Plasma, where KWin
+/// draws it. Fixed at startup: decorations can't change on a live window.
+pub fn native_titlebar() -> bool {
+    if cfg!(any(windows, target_os = "macos")) {
+        return true;
+    }
+    std::env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .split(':')
+        .any(|d| d.eq_ignore_ascii_case("kde"))
+}
+
 #[cfg(target_os = "linux")]
 pub fn fallback_icon_theme() -> Option<&'static str> {
     let mut dirs: Vec<PathBuf> = vec![home_dir().join(".local/share/icons"), home_dir().join(".icons")];
