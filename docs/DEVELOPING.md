@@ -42,6 +42,19 @@ python3 tools/mock-jellyfin.py 8096
 python3 tools/mock-jellyfin.py 8096 --many 400   # a big movie library
 ```
 
+It also does SyncPlay (a simplified version of the server's group
+states). To try a group, run two copies of the app with separate
+folders, each with its own `jellyfin.json` device id:
+
+```fish
+set -x XDG_CONFIG_HOME /tmp/sp-b/config; set -x XDG_DATA_HOME /tmp/sp-b/data
+set -x XDG_CACHE_HOME /tmp/sp-b/cache; set -x RUST_LOG nebula_player::app::syncplay=debug
+cargo run
+```
+
+The debug log says when each command is due and how far the player is
+from the group ("… ms behind the group").
+
 ## How it's put together
 
 - `src/mpv.rs`: the `Player`, over one of two backends. On Linux and
@@ -107,6 +120,33 @@ arrives as a CLIENT_MESSAGE event and counts in `State::skip_presses`.
 The section is disabled again once the segment is over, so S takes
 screenshots otherwise. The mock server has an intro (2–8 s) and credits
 (15–20 s) on every episode.
+
+### SyncPlay
+
+Watch together, as jellyfin-web does it (its `plugins/syncPlay`, which
+the code follows piece by piece). `src/syncplay.rs` is the protocol: the
+`/SyncPlay/...` requests, the session WebSocket (`/socket?api_key=…&
+deviceId=…`, the same device id as the auth header, with KeepAlive as
+the server asks) and time sync against `/GetUtcTime` (8 measurements,
+the one with the shortest round trip wins; three quick pings after
+joining, then one a minute, each reported with `/SyncPlay/Ping`).
+
+`src/app/syncplay.rs` is the client: jellyfin-web's Manager, PlaybackCore,
+QueueCore and Controller. In a group the player's play/pause, seeks
+(Skip Intro included), next/previous and Play buttons anywhere become
+requests (`group_*`, routed from `update_player` and `Message::Play`);
+speed changes are ignored, as in jellyfin-web. Server commands carry a
+server time and are scheduled on the local clock (`Timed`, dropped when
+something newer is scheduled: `generation`). A queue item loads paused
+(`start_remote` with `sync_pid`), and Ready goes to the server once it's
+loaded (`await_start`) or a group seek has landed (`await_seek`). A
+stall of 3 s or more sends Buffering, and Ready when it ends. Playing an
+episode queues the rest of its show (`episodes_from`) when episodes play
+on, and at the end of an item every member asks for NextItem (the server
+acts on the first). Sync correction (SpeedToSync/SkipToSync) is off by
+default, as in jellyfin-web; it's in the group menu. In mpv's own window
+(and on macOS) the app can't intercept mpv's keys, so a pause there is
+noticed and sent as a request; seeks there stay local.
 
 ### Embedding
 

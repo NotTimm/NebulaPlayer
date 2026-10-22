@@ -42,7 +42,7 @@ files are play-only, without scraping; metadata comes from Jellyfin.
 
 ## Where things stand
 
-Last updated 2026-10-21 (evening session).
+Last updated 2026-10-22.
 
 - CI: `.github/workflows/build.yml` is the full workflow modelled on
   Nebula Reader's minus COPR and winget (deb, rpm, AppImage, flatpak,
@@ -106,6 +106,22 @@ Last updated 2026-10-21 (evening session).
   ships `libmpv-2.dll`. A file given on the command line plays only once
   the window has opened (starting mpv's renderer while the app's was
   starting crashed Mesa).
+- SyncPlay (2026-10-22): watch together the way jellyfin-web does it,
+  see docs/DEVELOPING.md "SyncPlay". Tested with two copies of the app
+  against the mock (`tools/mock-jellyfin.py` has a SyncPlay group
+  server and WebSocket): create/join, start together, pause, seek, Skip
+  Intro as a group seek, autoplay through a show's queue, a late joiner
+  (both within ~±80 ms in Xvfb). Not yet tried against a real Jellyfin
+  server or with jellyfin-web in the same group (demo.jellyfin.org is
+  blocked from cloud sessions).
+- Windows window (2026-10-22): native title bar only (libcosmic's window
+  buttons hidden on Windows/macOS/KDE, as in Nebula Reader), opaque
+  window there, the exe's icon set with WM_SETICON and the title bar's
+  colours from the theme (`src/app/window_frame.rs`). The owner saw the
+  page flicker while scrolling on Windows (against demo.jellyfin.org);
+  it doesn't happen in Xvfb. The transparent window was the suspect
+  (the Reader, opaque with a native frame, doesn't flicker); unconfirmed
+  until the owner tries a build.
 - Not yet: transcoding fallback, in-app updates, zero-copy video
   (dmabuf). Embedded video seen working only in Xvfb (OpenGL through
   llvmpipe); not yet on the owner's GPU, Wayland, NVIDIA or Windows

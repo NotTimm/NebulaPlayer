@@ -31,6 +31,11 @@ rendering and audio passthrough.
   (or anything else that fills in Jellyfin's media segments): a Skip
   Intro button (or S / Enter), or skipping by itself if you prefer.
   Recaps, previews and ads are covered too.
+- **SyncPlay** (watch together), as in Jellyfin's web and desktop apps:
+  create or join a group from the people button, and everyone in it
+  plays, pauses, seeks and moves to the next episode together, with
+  members of the same group on jellyfin-web, Jellyfin Media Player or
+  phones.
 - **Local files**: add folders and play anything in them. There's no
   scraping; metadata comes from Jellyfin only.
 - Jellyfin's dark look with your desktop's accent colour (or Jellyfin's
