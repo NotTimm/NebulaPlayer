@@ -56,6 +56,8 @@ Last updated 2026-10-22.
 - Released v0.1.0-alpha.1 (2026-10-21, pre-release, every file signed
   with the reader's minisign key). Its GitHub text was published before
   the notes file's Windows line mentioned the `vulkan` folder.
+- Released v0.1.0-alpha.3 (2026-10-22): SyncPlay and the Windows title
+  bar fixes; publish run started from this session.
 - COPR: project `timbo-slice/nebula-player` (owner's account), package
   `nebula-player` from SCM + make srpm, chroots Fedora 43/44/45/rawhide
   x86_64, no auto-rebuild; first build 11184764 (alpha.1) started by
