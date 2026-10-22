@@ -234,6 +234,13 @@ impl App {
     }
 
     pub(super) fn update_player(&mut self, msg: PlayerMsg) -> cosmic::app::Task<Message> {
+        // Playing a SyncPlay group's item: playback is the group's.
+        if self.sync_playing() {
+            if let Some(task) = self.group_player_msg(&msg) {
+                self.wake_controls();
+                return task;
+            }
+        }
         let Some(player) = &self.player else { return cosmic::app::Task::none() };
         let state = &self.player_ui.state;
         match msg {
@@ -333,6 +340,40 @@ impl App {
             self.player_ui.state = p.state();
         }
         cosmic::app::Task::none()
+    }
+
+    /// The player's buttons and keys in a SyncPlay group, as jellyfin-web
+    /// routes them: requests to the group instead of the player. `None`
+    /// for what stays local (volume, tracks, full screen, stop).
+    fn group_player_msg(&mut self, msg: &PlayerMsg) -> Option<cosmic::app::Task<Message>> {
+        let position = self.player_ui.state.position;
+        Some(match msg {
+            PlayerMsg::TogglePause => self.group_toggle_pause(),
+            PlayerMsg::SeekBy(s) => self.group_seek(position + s),
+            PlayerMsg::SeekRelease => match self.player_ui.seek_drag.take() {
+                Some(s) => self.group_seek(s),
+                None => cosmic::app::Task::none(),
+            },
+            PlayerMsg::Next => self.group_next(true),
+            PlayerMsg::Previous => {
+                let has_prev = self.playback.as_ref().is_some_and(|pb| pb.previous.is_some());
+                if has_prev && position < 5.0 {
+                    self.group_next(false)
+                } else {
+                    self.group_seek(0.0)
+                }
+            }
+            // jellyfin-web ignores speed changes in a group.
+            PlayerMsg::Speed(_) => {
+                self.player_ui.menu = None;
+                cosmic::app::Task::none()
+            }
+            PlayerMsg::Key(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+                let action = self.key_action(key, *modifiers)?;
+                return self.group_player_msg(&action);
+            }
+            _ => return None,
+        })
     }
 
     /// jellyfin-web's keys.
@@ -468,6 +509,10 @@ impl App {
             );
         }
 
+        if let Some(notices) = self.sync_notices() {
+            layers = layers.push(notices);
+        }
+
         let area = widget::mouse_area(layers)
             .on_move(|_| Message::Player(PlayerMsg::Activity))
             .on_press(Message::Player(PlayerMsg::TogglePause))
@@ -486,13 +531,19 @@ impl App {
         let msg = |m: PlayerMsg| Message::Player(m);
 
         let title = pb.map(|pb| pb.title.clone()).unwrap_or_default();
-        let top = widget::container(
-            widget::row::with_capacity(2)
-                .push(overlay_icon("go-previous-symbolic", 20, msg(PlayerMsg::Stop)))
-                .push(widget::text::title4(title))
-                .spacing(12)
-                .align_y(Alignment::Center),
-        )
+        let mut top_row = widget::row::with_capacity(4)
+            .push(overlay_icon("go-previous-symbolic", 20, msg(PlayerMsg::Stop)))
+            .push(widget::text::title4(title).width(Length::Fill))
+            .spacing(12)
+            .align_y(Alignment::Center);
+        // SyncPlay: what correction is going on, and the group menu.
+        if let Some(method) = self.sync.method.clone() {
+            top_row = top_row.push(widget::text::caption(method));
+        }
+        if self.account.is_some() {
+            top_row = top_row.push(overlay_icon("system-users-symbolic", 20, Message::Sync(super::SyncMsg::ToggleMenu)));
+        }
+        let top = widget::container(top_row)
         .padding([16, 20, 40, 20])
         .width(Length::Fill)
         .class(cosmic::theme::Container::custom(|t| crate::theme::player_fade(t, true)));

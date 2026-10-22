@@ -14,16 +14,27 @@ installed every item streams a short test video, made once in the temp
 folder. Playback reports and watched/favourite changes are printed and
 kept in memory. --many N adds N more movies, for trying big libraries
 (paging, the A-Z bar, search).
+
+SyncPlay works too: the session WebSocket (/socket), /GetUtcTime and the
+/SyncPlay/... requests, with a simplified version of the server's group
+states (waiting for everyone to be Ready, then playing them all at once).
+Run two copies of the app with separate config folders to try it; each
+copy is a member named after the end of its device id.
 """
 
+import base64
+import hashlib
 import json
 import os
 import struct
 import subprocess
 import sys
+import threading
+import uuid
 import tempfile
 import time
 import zlib
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -261,6 +272,292 @@ def trickplay_sheet(index):
 
 # ── HTTP ───────────────────────────────────────────────────────────────────
 
+# ── SyncPlay ───────────────────────────────────────────────────────────────
+
+SOCKETS = {}  # device id -> Socket
+GROUPS = {}  # group id -> group dict
+SP_LOCK = threading.RLock()
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
+
+
+def iso(t):
+    """A .NET-style UTC time, 7 fraction digits, as Jellyfin sends."""
+    return t.strftime("%Y-%m-%dT%H:%M:%S.") + f"{t.microsecond:06d}0Z"
+
+
+def parse_iso(s):
+    s = s.rstrip("Z")
+    if "." in s:
+        head, frac = s.split(".")
+        s = f"{head}.{frac[:6]:0<6}"
+        return datetime.strptime(s, "%Y-%m-%dT%H:%M:%S.%f").replace(tzinfo=timezone.utc)
+    return datetime.strptime(s, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+
+
+class Socket:
+    def __init__(self, conn):
+        self.conn = conn
+        self.lock = threading.Lock()
+
+    def send(self, obj):
+        data = json.dumps(obj).encode()
+        head = bytes([0x81])
+        n = len(data)
+        if n < 126:
+            head += bytes([n])
+        elif n < 65536:
+            head += bytes([126]) + struct.pack(">H", n)
+        else:
+            head += bytes([127]) + struct.pack(">Q", n)
+        with self.lock:
+            try:
+                self.conn.sendall(head + data)
+            except OSError:
+                pass
+
+
+def ws_send(device, message_type, data):
+    sock = SOCKETS.get(device)
+    if sock:
+        sock.send({"MessageType": message_type, "MessageId": uuid.uuid4().hex, "Data": data})
+
+
+def member_name(device):
+    return "demo-" + device[-4:]
+
+
+def group_info(g):
+    return {
+        "GroupId": g["id"],
+        "GroupName": g["name"],
+        "State": g["state"],
+        "Participants": [member_name(d) for d in g["members"]],
+        "LastUpdatedAt": iso(utc_now()),
+    }
+
+
+def group_of(device):
+    for g in GROUPS.values():
+        if device in g["members"]:
+            return g
+    return None
+
+
+def group_update(devices, g, kind, data):
+    for d in devices:
+        ws_send(d, "SyncPlayGroupUpdate", {"GroupId": g["id"] if g else "", "Type": kind, "Data": data})
+
+
+def position(g):
+    """Where the group is now, in ticks."""
+    if g["state"] == "Playing":
+        elapsed = (utc_now() - g["since"]).total_seconds()
+        return g["ticks"] + max(0, int(elapsed * 10_000_000))
+    return g["ticks"]
+
+
+def current_pid(g):
+    if 0 <= g["index"] < len(g["queue"]):
+        return g["queue"][g["index"]]["PlaylistItemId"]
+    return ""
+
+
+def command(devices, g, kind, when, ticks):
+    data = {
+        "GroupId": g["id"],
+        "PlaylistItemId": current_pid(g),
+        "When": iso(when),
+        "PositionTicks": ticks,
+        "Command": kind,
+        "EmittedAt": iso(utc_now()),
+    }
+    print("syncplay command", kind, "at", data["When"], "ticks", ticks, "to", [member_name(d) for d in devices])
+    for d in devices:
+        ws_send(d, "SyncPlayCommand", data)
+
+
+def play_queue(devices, g, reason):
+    data = {
+        "Reason": reason,
+        "LastUpdate": iso(utc_now()),
+        "Playlist": g["queue"],
+        "PlayingItemIndex": g["index"],
+        "StartPositionTicks": position(g),
+        "IsPlaying": g["state"] == "Playing",
+        "ShuffleMode": "Sorted",
+        "RepeatMode": "RepeatNone",
+    }
+    print("syncplay queue", reason, "index", g["index"], "of", len(g["queue"]))
+    group_update(devices, g, "PlayQueue", data)
+
+
+def set_state(g, state, reason):
+    g["state"] = state
+    group_update(g["members"], g, "StateUpdate", {"State": state, "Reason": reason})
+
+
+def wait_for_all(g, resume, reason):
+    """Waiting state: everyone must report Ready before playback goes on."""
+    g["ticks"] = position(g)
+    g["resume"] = resume
+    for m in g["members"].values():
+        m["ready"] = False
+    set_state(g, "Waiting", reason)
+
+
+def check_ready(g):
+    waiting = [m for m in g["members"].values() if not m["ready"] and not m["ignore"]]
+    if g["state"] != "Waiting" or waiting:
+        return
+    if g["resume"]:
+        # Everyone starts together, a little ahead, so the command arrives
+        # in time (the server uses twice the highest ping).
+        highest = max([m["ping"] for m in g["members"].values()] + [0])
+        when = utc_now() + timedelta(milliseconds=max(2 * highest, 500))
+        g["since"] = when
+        g["state"] = "Playing"
+        command(g["members"], g, "Unpause", when, g["ticks"])
+        set_state(g, "Playing", "Ready")
+    else:
+        command(g["members"], g, "Pause", utc_now(), g["ticks"])
+        set_state(g, "Paused", "Ready")
+
+
+def syncplay_post(device, what, body):
+    with SP_LOCK:
+        g = group_of(device)
+        if what == "New":
+            if g:
+                syncplay_leave(device, g)
+            gid = uuid.uuid4().hex
+            g = GROUPS[gid] = {
+                "id": gid, "name": body.get("GroupName", "Group"), "state": "Idle", "members": {},
+                "queue": [], "index": -1, "ticks": 0, "since": utc_now(), "resume": False,
+            }
+            g["members"][device] = {"ready": True, "ignore": False, "ping": 0}
+            print("syncplay new group", g["name"], "by", member_name(device))
+            group_update([device], g, "GroupJoined", group_info(g))
+            return
+        if what == "Join":
+            target = GROUPS.get(body.get("GroupId", "").replace("-", ""))
+            if not target:
+                group_update([device], None, "GroupDoesNotExist", "")
+                return
+            if g and g is not target:
+                syncplay_leave(device, g)
+            others = list(target["members"])
+            target["members"][device] = {"ready": False, "ignore": False, "ping": 0}
+            print("syncplay", member_name(device), "joins", target["name"])
+            group_update([device], target, "GroupJoined", group_info(target))
+            group_update(others, target, "UserJoined", member_name(device))
+            if target["queue"]:
+                was_playing = target["state"] == "Playing"
+                if was_playing:
+                    # Everyone waits for the newcomer to load.
+                    target["ticks"] = position(target)
+                    command(others, target, "Pause", utc_now(), target["ticks"])
+                target["resume"] = was_playing or target["resume"]
+                target["state"] = "Waiting"
+                play_queue([device], target, "NewPlaylist")
+                set_state(target, "Waiting", "Join")
+            else:
+                target["members"][device]["ready"] = True
+            return
+        if g is None:
+            group_update([device], None, "NotInGroup", "")
+            return
+        m = g["members"][device]
+        if what == "Leave":
+            syncplay_leave(device, g)
+        elif what == "Ping":
+            m["ping"] = body.get("Ping", 0)
+        elif what == "SetIgnoreWait":
+            m["ignore"] = bool(body.get("IgnoreWait"))
+            check_ready(g)
+        elif what == "SetNewQueue":
+            g["queue"] = [{"ItemId": i, "PlaylistItemId": uuid.uuid4().hex} for i in body.get("PlayingQueue", [])]
+            g["index"] = body.get("PlayingItemPosition", 0)
+            g["ticks"] = body.get("StartPositionTicks", 0)
+            g["state"] = "Idle"
+            wait_for_all(g, True, "Play")
+            play_queue(g["members"], g, "NewPlaylist")
+        elif what in ("NextItem", "PreviousItem"):
+            step = 1 if what == "NextItem" else -1
+            if body.get("PlaylistItemId") != current_pid(g) or not 0 <= g["index"] + step < len(g["queue"]):
+                print("syncplay", what, "ignored")
+                return
+            g["index"] += step
+            g["ticks"] = 0
+            g["state"] = "Idle"
+            wait_for_all(g, True, what)
+            play_queue(g["members"], g, what)
+        elif what == "Pause":
+            if g["state"] == "Playing":
+                g["ticks"] = position(g)
+                g["state"] = "Paused"
+                command(g["members"], g, "Pause", utc_now(), g["ticks"])
+                set_state(g, "Paused", "Pause")
+            elif g["state"] == "Waiting":
+                g["resume"] = False
+        elif what == "Unpause":
+            if g["state"] in ("Paused", "Idle") and g["queue"]:
+                g["state"] = "Waiting"
+                g["resume"] = True
+                check_ready(g)
+            elif g["state"] == "Waiting":
+                g["resume"] = True
+                check_ready(g)
+        elif what == "Seek":
+            resume = g["state"] == "Playing" or (g["state"] == "Waiting" and g["resume"])
+            g["state"] = "Idle"
+            g["ticks"] = body.get("PositionTicks", 0)
+            wait_for_all(g, resume, "Seek")
+            command(g["members"], g, "Seek", utc_now(), g["ticks"])
+        elif what == "Buffering":
+            if g["state"] == "Playing":
+                g["ticks"] = position(g)
+                g["state"] = "Idle"
+                wait_for_all(g, True, "Buffer")
+                command([d for d in g["members"] if d != device], g, "Pause", utc_now(), g["ticks"])
+            m["ready"] = False
+        elif what == "Ready":
+            if body.get("PlaylistItemId") != current_pid(g):
+                play_queue([device], g, "SetCurrentItem")
+                return
+            m["ready"] = True
+            if g["state"] == "Waiting":
+                check_ready(g)
+            elif g["state"] == "Playing":
+                # Catch up with the group.
+                command([device], g, "Unpause", g["since"], g["ticks"])
+        elif what == "Stop":
+            g["ticks"] = 0
+            g["state"] = "Idle"
+            command(g["members"], g, "Stop", utc_now(), 0)
+
+
+def syncplay_leave(device, g):
+    del g["members"][device]
+    print("syncplay", member_name(device), "leaves", g["name"])
+    group_update([device], g, "GroupLeft", g["id"])
+    group_update(g["members"], g, "UserLeft", member_name(device))
+    if not g["members"]:
+        del GROUPS[g["id"]]
+    else:
+        check_ready(g)
+
+
+def device_of(headers):
+    auth = headers.get("Authorization", "")
+    marker = 'DeviceId="'
+    if marker in auth:
+        return auth.split(marker, 1)[1].split('"', 1)[0]
+    return "unknown"
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stderr.write("%s %s\n" % (self.command, self.path))
@@ -282,6 +579,46 @@ class Handler(BaseHTTPRequestHandler):
     def body(self):
         n = int(self.headers.get("Content-Length") or 0)
         return json.loads(self.rfile.read(n) or b"{}")
+
+    def websocket(self, device):
+        """The session WebSocket: handshake, then frames until it closes."""
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        accept = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+        # WebSocket clients want an HTTP/1.1 upgrade.
+        self.protocol_version = "HTTP/1.1"
+        self.send_response(101)
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        self.end_headers()
+        self.wfile.flush()
+        sock = Socket(self.connection)
+        SOCKETS[device] = sock
+        print("socket open", member_name(device))
+        sock.send({"MessageType": "ForceKeepAlive", "MessageId": uuid.uuid4().hex, "Data": 60})
+        try:
+            while True:
+                head = self.rfile.read(2)
+                if len(head) < 2:
+                    break
+                opcode, n = head[0] & 0x0F, head[1] & 0x7F
+                if n == 126:
+                    n = struct.unpack(">H", self.rfile.read(2))[0]
+                elif n == 127:
+                    n = struct.unpack(">Q", self.rfile.read(8))[0]
+                mask = self.rfile.read(4) if head[1] & 0x80 else b"\0\0\0\0"
+                payload = bytes(b ^ mask[i % 4] for i, b in enumerate(self.rfile.read(n)))
+                if opcode == 8:
+                    break
+                if opcode == 9:
+                    with sock.lock:
+                        self.connection.sendall(bytes([0x8A, len(payload)]) + payload)
+        except OSError:
+            pass
+        if SOCKETS.get(device) is sock:
+            del SOCKETS[device]
+        print("socket closed", member_name(device))
+        self.close_connection = True
 
     def do_HEAD(self):
         self.do_GET()
@@ -321,8 +658,18 @@ class Handler(BaseHTTPRequestHandler):
             if not ensure_video():
                 return self.send({}, 404)
             return self.stream_file(VIDEO)
+        if p == "/socket":
+            if q.get("api_key") != TOKEN:
+                return self.send({}, 401)
+            return self.websocket(q.get("deviceid", "unknown"))
+        if p == "/GetUtcTime":
+            received = iso(utc_now())
+            return self.send({"RequestReceptionTime": received, "ResponseTransmissionTime": iso(utc_now())})
         if not self.authed():
             return self.send({}, 401)
+        if p == "/SyncPlay/List":
+            with SP_LOCK:
+                return self.send([group_info(g) for g in GROUPS.values()])
         if len(parts) == 5 and parts[0] == "Videos" and parts[2] == "Trickplay" and parts[4].endswith(".jpg"):
             sheet = trickplay_sheet(int(parts[4][:-4]))
             if sheet is None:
@@ -483,6 +830,13 @@ class Handler(BaseHTTPRequestHandler):
                     USER_DATA[item]["PlaybackPositionTicks"] = ticks
             return self.send(b"", 204)
         if p == "/Sessions/Logout":
+            return self.send(b"", 204)
+        if parts[:1] == ["SyncPlay"] and len(parts) == 2:
+            body = self.body()
+            device = device_of(self.headers)
+            if parts[1] not in ("Ping",):
+                print("syncplay request", parts[1], "from", member_name(device), json.dumps(body))
+            syncplay_post(device, parts[1], body)
             return self.send(b"", 204)
         return self.user_flag(parts, True)
 

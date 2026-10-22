@@ -64,6 +64,11 @@ pub struct Settings {
     pub skip: SkipMode,
     /// Folders listed on the Local Files page.
     pub local_folders: Vec<PathBuf>,
+    /// SyncPlay's sync correction, off by default as in jellyfin-web, and
+    /// its two methods.
+    pub sync_correction: bool,
+    pub speed_to_sync: bool,
+    pub skip_to_sync: bool,
 }
 
 impl Default for Settings {
@@ -78,6 +83,9 @@ impl Default for Settings {
             autoplay_next: true,
             skip: SkipMode::Ask,
             local_folders: Vec::new(),
+            sync_correction: false,
+            speed_to_sync: true,
+            skip_to_sync: true,
         }
     }
 }

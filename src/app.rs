@@ -30,6 +30,7 @@ mod player;
 mod search;
 mod settings_view;
 mod signin;
+mod syncplay;
 mod widgets;
 #[cfg_attr(not(windows), allow(dead_code))] // the title bar is only set on Windows
 mod window_frame;
@@ -37,6 +38,8 @@ mod window_frame;
 pub use library::{LibraryMsg, LibraryPage};
 pub use player::{PlayerMsg, PlayerUi};
 pub use local::LocalFile;
+pub use syncplay::SyncMsg;
+use syncplay::SyncState;
 
 /// Image widths fetched for each use (about twice the size shown, for
 /// HiDPI screens).
@@ -163,6 +166,10 @@ struct Playback {
     skipped: HashSet<usize>,
     /// `mpv::State::skip_presses` already handled.
     skip_presses: u64,
+    /// In a SyncPlay group: the group queue's entry this is.
+    sync_pid: Option<String>,
+    /// A skip that, in a group, becomes a group seek (seconds).
+    group_seek: Option<f64>,
 }
 
 struct RemotePlay {
@@ -194,6 +201,10 @@ pub struct PlayStart {
     info: jellyfin::PlaybackInfo,
     segments: Vec<jellyfin::Segment>,
     resume: bool,
+    /// Where to start instead (seconds), for SyncPlay.
+    start_at: Option<f64>,
+    /// The SyncPlay queue entry this loads.
+    sync_pid: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -245,6 +256,7 @@ pub enum Message {
     PlayerTick,
     NextEpisode(Result<Option<Item>, String>),
     Reported(Result<(), String>),
+    Sync(SyncMsg),
 
     // Local files
     OpenFile,
@@ -309,6 +321,8 @@ pub struct App {
     /// window is up and has its icon.
     #[cfg_attr(not(windows), allow(dead_code))]
     frame: Option<window_frame::Frame>,
+    /// SyncPlay (watch together).
+    sync: SyncState,
     error: Option<String>,
 }
 
@@ -489,6 +503,8 @@ impl App {
     fn use_account(&mut self, account: Option<Account>) -> Task<Message> {
         self.settings.account = account.as_ref().map(|a| a.key());
         self.settings.save();
+        // SyncPlay groups belong to the session that joined them.
+        self.sync = SyncState::new();
         self.account = account;
         self.home = Home::default();
         self.back.clear();
@@ -558,7 +574,9 @@ impl App {
         let (Some(player), Some(pb)) = (&self.player, &mut self.playback) else { return };
         let Some(i) = pb.prompting.take() else { return };
         let state = player.state();
-        skip_to(player, &pb.segments[i], &state);
+        let seg = pb.segments[i];
+        let grouped = pb.sync_pid.is_some();
+        skip_to(player, &seg, &state, grouped.then_some(&mut pb.group_seek));
     }
 
     /// Tells the server the current file stopped (if it's a server's).
@@ -573,6 +591,50 @@ impl App {
         cosmic::task::future(async move { Message::Reported(jellyfin::report_stopped(&account, report).await) })
     }
 
+    /// Fetches what playing `item` needs (resolving a show or season to its
+    /// episode), then plays it. An item with only its id is fetched first.
+    fn prepare_play(&mut self, item: Item, resume: bool, start_at: Option<f64>, sync_pid: Option<String>) -> Task<Message> {
+        let Some(account) = self.account.clone() else { return Task::none() };
+        cosmic::task::future(async move {
+            let result = async {
+                let item = if item.kind.is_empty() { jellyfin::item(&account, &item.id).await? } else { item };
+                // A show or season plays where the user is up to.
+                let item = match item.kind.as_str() {
+                    "Series" => jellyfin::series_start(&account, &item.id)
+                        .await?
+                        .ok_or_else(|| format!("{} has no episodes.", item.name))?,
+                    "Season" => {
+                        let series = item.series_id.clone().unwrap_or_default();
+                        let eps = jellyfin::episodes(&account, &series, &item.id).await?;
+                        eps.iter()
+                            .find(|e| !e.played())
+                            .or(eps.first())
+                            .cloned()
+                            .ok_or_else(|| format!("{} has no episodes.", item.name))?
+                    }
+                    _ => item,
+                };
+                let neighbours = async {
+                    match (&item.series_id, item.is_episode()) {
+                        (Some(series), true) => {
+                            jellyfin::episode_neighbours(&account, series, &item.id).await.unwrap_or_default()
+                        }
+                        _ => (None, None),
+                    }
+                };
+                let (info, segments, (previous, next), extras) = tokio::join!(
+                    jellyfin::playback_info(&account, &item.id),
+                    jellyfin::segments(&account, &item.id),
+                    neighbours,
+                    jellyfin::seek_extras(&account, &item.id),
+                );
+                Ok(Box::new(PlayStart { item, extras, previous, next, info: info?, segments, resume, start_at, sync_pid }))
+            }
+            .await;
+            Message::PlaybackReady(result)
+        })
+    }
+
     fn start_remote(&mut self, start: PlayStart) -> Task<Message> {
         let Some(account) = self.account.clone() else { return Task::none() };
         let Some(source) = start.info.media_sources.first().cloned() else {
@@ -585,7 +647,7 @@ impl App {
         let load = mpv::Load {
             url: account.stream_url(&start.item.id, &source, &play_session_id),
             title: media_title(&start.item),
-            start: if start.resume { Some(start.item.resume_seconds()) } else { None },
+            start: start.start_at.or_else(|| start.resume.then(|| start.item.resume_seconds())),
             headers: account.stream_headers(),
             audio,
             subtitle,
@@ -595,6 +657,8 @@ impl App {
         let (loaded_before, entered) = match self.ensure_player() {
             Ok((p, entered)) => {
                 let before = p.state().loaded;
+                // A SyncPlay item waits paused for the group to start.
+                p.set_paused(start.sync_pid.is_some());
                 if let Err(e) = p.load(&load) {
                     self.error = Some(e);
                     return stopped;
@@ -637,6 +701,8 @@ impl App {
             prompting: None,
             skipped: HashSet::new(),
             skip_presses: self.player.as_ref().map(|p| p.state().skip_presses).unwrap_or(0),
+            sync_pid: start.sync_pid,
+            group_seek: None,
         });
         Task::batch([stopped, entered])
     }
@@ -676,6 +742,8 @@ impl App {
                     prompting: None,
                     skipped: HashSet::new(),
                     skip_presses,
+                    sync_pid: None,
+                    group_seek: None,
                 });
                 return Task::batch([stopped, entered]);
             }
@@ -701,7 +769,8 @@ impl App {
             // Continue Watching and the page's progress bars have changed.
             return Task::batch([stopped, left, self.refresh_home(), self.refresh_details()]);
         }
-        let Some(pb) = &mut self.playback else { return Task::none() };
+        let Some(pb) = &mut self.playback else { return self.sync_tick(&state) };
+        let grouped = pb.sync_pid.is_some();
         if state.loaded > pb.loaded_before && state.ended.is_none() && state.duration > 0.0 {
             pb.position = state.position;
         }
@@ -756,6 +825,17 @@ impl App {
                         }
                     });
                     tasks.push(self.end_playback());
+                    // In a group, everyone asks for the next item; the
+                    // server acts on the first ask.
+                    let next = if grouped && self.sync_active() {
+                        if self.group_has_next() && self.settings.autoplay_next {
+                            tasks.push(self.group_next(true));
+                            return Task::batch(tasks);
+                        }
+                        None
+                    } else {
+                        next
+                    };
                     match next {
                         Some((account, series, episode)) => tasks.push(cosmic::task::future(async move {
                             Message::NextEpisode(jellyfin::episode_after(&account, &series, &episode).await)
@@ -771,7 +851,7 @@ impl App {
                     pb.finished = true;
                     self.error = Some(format!(
                         "mpv couldn't play this: {}",
-                        state.error.unwrap_or_else(|| "unknown error".into())
+                        state.error.clone().unwrap_or_else(|| "unknown error".into())
                     ));
                     tasks.push(self.end_playback());
                     if let Some(p) = &self.player {
@@ -781,6 +861,10 @@ impl App {
                 _ => {}
             }
         }
+        if let Some(target) = self.playback.as_mut().and_then(|pb| pb.group_seek.take()) {
+            tasks.push(self.group_seek(target));
+        }
+        tasks.push(self.sync_tick(&state));
         Task::batch(tasks)
     }
 
@@ -814,11 +898,16 @@ impl App {
 }
 
 /// Jumps past a segment.
-fn skip_to(player: &mpv::Player, seg: &jellyfin::Segment, state: &mpv::State) {
+/// Skips a segment; in a SyncPlay group (`group_seek`) the skip is a seek
+/// for the whole group, as jellyfin-web's skip button does.
+fn skip_to(player: &mpv::Player, seg: &jellyfin::Segment, state: &mpv::State, group_seek: Option<&mut Option<f64>>) {
     // Credits that run to the end skip to the end, so the next episode
     // starts.
     let end = if state.duration > 0.0 { seg.end.min(state.duration) } else { seg.end };
-    player.seek(end);
+    match group_seek {
+        Some(seek) => *seek = Some(end),
+        None => player.seek(end),
+    }
     player.show_text(&format!("Skipped {}", seg.kind.label().to_lowercase()), 1500);
 }
 
@@ -829,7 +918,10 @@ fn skip_to(player: &mpv::Player, seg: &jellyfin::Segment, state: &mpv::State) {
 fn skip_segments(player: &mpv::Player, pb: &mut Playback, state: &mpv::State, mode: SkipMode, inside: bool) {
     // The last half second of a segment isn't worth a prompt.
     let current = pb.segments.iter().position(|s| state.position >= s.start && state.position < s.end - 0.5);
-    let skip_to = |player: &mpv::Player, seg: &jellyfin::Segment| skip_to(player, seg, state);
+    let grouped = pb.sync_pid.is_some();
+    let skip_to = |player: &mpv::Player, seg: &jellyfin::Segment, group_seek: &mut Option<f64>| {
+        skip_to(player, seg, state, grouped.then_some(group_seek))
+    };
 
     let pressed = state.skip_presses > pb.skip_presses;
     pb.skip_presses = state.skip_presses;
@@ -848,14 +940,14 @@ fn skip_segments(player: &mpv::Player, pb: &mut Playback, state: &mpv::State, mo
         SkipMode::Off => {}
         SkipMode::Auto => {
             if pb.skipped.insert(i) {
-                skip_to(player, &seg);
+                skip_to(player, &seg, &mut pb.group_seek);
             }
         }
         SkipMode::Ask => {
             if pressed && pb.prompting == Some(i) {
                 player.skip_keys(false);
                 pb.prompting = None;
-                skip_to(player, &seg);
+                skip_to(player, &seg, &mut pb.group_seek);
             } else if pb.prompting.is_none() && inside {
                 pb.prompting = Some(i);
             } else if pb.prompting.is_none() {
@@ -984,6 +1076,7 @@ impl Application for App {
             window_width: 1280.0,
             startup_file: flags,
             frame: None,
+            sync: SyncState::new(),
             error: None,
         };
         app.set_header_title("Nebula Player".into());
@@ -1070,6 +1163,12 @@ impl Application for App {
                 "Refresh",
             ));
         }
+        if self.account.is_some() {
+            let button = widget::button::icon(icon::from_name("system-users-symbolic"))
+                .selected(self.sync_active())
+                .on_press(Message::Sync(SyncMsg::ToggleMenu));
+            els.push(tip(button, "SyncPlay"));
+        }
         els.push(tip(
             widget::button::icon(icon::from_name("document-open-symbolic")).on_press(Message::OpenFile),
             "Play a file",
@@ -1084,6 +1183,12 @@ impl Application for App {
     fn context_drawer(&self) -> Option<cosmic::app::context_drawer::ContextDrawer<'_, Self::Message>> {
         if !self.core.window.show_context {
             return None;
+        }
+        if self.sync.menu {
+            return Some(
+                cosmic::app::context_drawer::context_drawer(self.view_syncplay(), Message::Sync(SyncMsg::ToggleMenu))
+                    .title("SyncPlay"),
+            );
         }
         Some(
             cosmic::app::context_drawer::context_drawer(self.view_settings(), Message::ToggleSettings)
@@ -1110,6 +1215,17 @@ impl Application for App {
         }
         if matches!(self.page, Page::Home) && self.home.featured.len() > 1 {
             subs.push(time::every(Duration::from_secs(9)).map(|_| Message::FeaturedTick));
+        }
+        // The session's WebSocket, for SyncPlay, while signed in.
+        if let Some(account) = &self.account {
+            let key = (account.url.clone(), account.token.clone());
+            subs.push(Subscription::run_with(key, |(url, token)| {
+                use cosmic::iced::futures::StreamExt;
+                crate::syncplay::socket(url, token).map(|e| Message::Sync(SyncMsg::Socket(e)))
+            }));
+        }
+        if !self.sync.notices.is_empty() {
+            subs.push(time::every(Duration::from_millis(500)).map(|_| Message::Sync(SyncMsg::NoticeTick)));
         }
         if self.signin.quick_connect.is_some() && matches!(self.page, Page::SignIn) {
             subs.push(time::every(Duration::from_secs(2)).map(|_| Message::QuickConnectPoll));
@@ -1145,7 +1261,11 @@ impl Application for App {
         // A click anywhere on the page closes the sidebar, as well as
         // doing what it does.
         let close_nav = (self.core.nav_bar_active() && self.nav_model().is_some()).then_some(Message::CloseNav);
-        crate::input::gestures(col).on_press_maybe(close_nav).into()
+        let page = crate::input::gestures(col).on_press_maybe(close_nav);
+        match self.sync_notices() {
+            Some(notices) => cosmic::iced::widget::stack![page, notices].into(),
+            None => page.into(),
+        }
     }
 
     /// COSMIC's own theme settings changed (its accent among them).
@@ -1481,50 +1601,23 @@ impl App {
 
             // ── Playback ─────────────────────────────────────────────────────
             Message::Play { item, resume } => {
-                let Some(account) = self.account.clone() else { return Task::none() };
-                return cosmic::task::future(async move {
-                    let result = async {
-                        // A show or season plays where the user is up to.
-                        let item = match item.kind.as_str() {
-                            "Series" => jellyfin::series_start(&account, &item.id)
-                                .await?
-                                .ok_or_else(|| format!("{} has no episodes.", item.name))?,
-                            "Season" => {
-                                let series = item.series_id.clone().unwrap_or_default();
-                                let eps = jellyfin::episodes(&account, &series, &item.id).await?;
-                                eps.iter()
-                                    .find(|e| !e.played())
-                                    .or(eps.first())
-                                    .cloned()
-                                    .ok_or_else(|| format!("{} has no episodes.", item.name))?
-                            }
-                            _ => item,
-                        };
-                        let neighbours = async {
-                            match (&item.series_id, item.is_episode()) {
-                                (Some(series), true) => {
-                                    jellyfin::episode_neighbours(&account, series, &item.id).await.unwrap_or_default()
-                                }
-                                _ => (None, None),
-                            }
-                        };
-                        let (info, segments, (previous, next), extras) = tokio::join!(
-                            jellyfin::playback_info(&account, &item.id),
-                            jellyfin::segments(&account, &item.id),
-                            neighbours,
-                            jellyfin::seek_extras(&account, &item.id),
-                        );
-                        Ok(Box::new(PlayStart { item, extras, previous, next, info: info?, segments, resume }))
-                    }
-                    .await;
-                    Message::PlaybackReady(result)
-                });
+                // In a SyncPlay group, playing something sets the group's queue.
+                if self.sync_active() {
+                    return self.group_play(item, resume);
+                }
+                return self.prepare_play(item, resume, None, None);
             }
             Message::PlaybackReady(result) => match result {
+                // A SyncPlay item the group has moved on from.
+                Ok(start) if start.sync_pid.is_some() && !self.sync_wants(start.sync_pid.as_deref()) => {}
                 Ok(start) => return self.start_remote(*start),
-                Err(e) => self.error = Some(e),
+                Err(e) => {
+                    self.error = Some(e);
+                    return self.sync_load_failed();
+                }
             },
             Message::PlayerTick => return self.player_tick(),
+            Message::Sync(msg) => return self.update_sync(msg),
             Message::Player(msg) => return self.update_player(msg),
             Message::NextEpisode(result) => match result {
                 Ok(Some(next)) => return self.update(Message::Play { item: next, resume: false }),
@@ -1589,7 +1682,9 @@ impl App {
 
             // ── Settings ─────────────────────────────────────────────────────
             Message::ToggleSettings => {
-                self.core.window.show_context = !self.core.window.show_context;
+                // From the SyncPlay menu, straight over to Settings.
+                self.core.window.show_context = !self.core.window.show_context || self.sync.menu;
+                self.sync.menu = false;
             }
             Message::SetTheme(i) => {
                 let choice = if i == 1 { ThemeChoice::System } else { ThemeChoice::Jellyfin };

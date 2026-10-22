@@ -301,3 +301,14 @@ pub fn overlay_button() -> cosmic::theme::Button {
         pressed: Box::new(|_, _| style(0.24, 1.0)),
     }
 }
+
+/// A SyncPlay notice ("Tim has joined the group."), like jellyfin-web's
+/// toasts: dark grey with white text, over the page or the video.
+pub fn notice(_theme: &cosmic::Theme) -> widget::container::Style {
+    widget::container::Style {
+        background: Some(Background::Color(Color::from_rgba8(0x30, 0x30, 0x30, 0.95))),
+        text_color: Some(Color::WHITE),
+        border: Border { radius: 8.0.into(), ..Default::default() },
+        ..Default::default()
+    }
+}

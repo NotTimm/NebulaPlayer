@@ -8,6 +8,7 @@ mod jellyfin;
 mod mpv;
 mod platform;
 mod settings;
+mod syncplay;
 mod theme;
 mod video;
 

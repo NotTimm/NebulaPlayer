@@ -178,8 +178,14 @@ fn device_name() -> String {
 
 static DEVICE_ID: OnceLock<String> = OnceLock::new();
 
+/// This install's id, as sent to the server (the session's WebSocket
+/// must give the same one).
+pub fn device_id() -> &'static str {
+    DEVICE_ID.get_or_init(|| Accounts::load().device_id)
+}
+
 fn auth_header(token: Option<&str>) -> String {
-    let device_id = DEVICE_ID.get_or_init(|| Accounts::load().device_id);
+    let device_id = device_id();
     let mut h = format!(
         r#"MediaBrowser Client="{CLIENT}", Device="{}", DeviceId="{device_id}", Version="{}""#,
         device_name().replace('"', ""),
@@ -193,7 +199,7 @@ fn auth_header(token: Option<&str>) -> String {
 
 // ── HTTP ────────────────────────────────────────────────────────────────────
 
-fn client() -> &'static reqwest::Client {
+pub(crate) fn client() -> &'static reqwest::Client {
     static C: OnceLock<reqwest::Client> = OnceLock::new();
     C.get_or_init(|| {
         reqwest::Client::builder()
@@ -222,7 +228,7 @@ pub fn candidate_urls(input: &str) -> Vec<String> {
     }
 }
 
-async fn get_json<T: serde::de::DeserializeOwned>(url: &str, auth: &str) -> Result<T, String> {
+pub(crate) async fn get_json<T: serde::de::DeserializeOwned>(url: &str, auth: &str) -> Result<T, String> {
     let resp = client()
         .get(url)
         .header("Authorization", auth)
@@ -286,7 +292,7 @@ impl UserRoute {
 }
 
 /// A request whose reply body doesn't matter (reports, marking played).
-async fn send(req: reqwest::RequestBuilder, auth: &str) -> Result<(), String> {
+pub(crate) async fn send(req: reqwest::RequestBuilder, auth: &str) -> Result<(), String> {
     let resp = req.header("Authorization", auth).send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("server error: HTTP {}", resp.status()));
@@ -827,6 +833,19 @@ pub async fn episode_after(account: &Account, series_id: &str, episode_id: &str)
     );
     let page: ItemsPage = get_json(&url, &account.auth()).await?;
     Ok(page.items.into_iter().find(|e| e.id != episode_id))
+}
+
+/// `episode_id` and every episode after it in its show, as jellyfin-web
+/// queues a show's episodes for SyncPlay.
+pub async fn episodes_from(account: &Account, series_id: &str, episode_id: &str) -> Result<Vec<Item>, String> {
+    let url = query(
+        account,
+        &format!("/Shows/{series_id}/Episodes"),
+        &format!("userId={}&isMissing=false&isVirtualUnaired=false", account.user_id),
+    );
+    let page: ItemsPage = get_json(&url, &account.auth()).await?;
+    let start = page.items.iter().position(|e| e.id == episode_id).unwrap_or(0);
+    Ok(page.items.into_iter().skip(start).collect())
 }
 
 /// The episodes either side of `episode_id` in its show, across seasons.
