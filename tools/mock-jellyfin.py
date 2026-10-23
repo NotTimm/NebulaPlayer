@@ -20,6 +20,12 @@ SyncPlay works too: the session WebSocket (/socket), /GetUtcTime and the
 states (waiting for everyone to be Ready, then playing them all at once).
 Run two copies of the app with separate config folders to try it; each
 copy is a member named after the end of its device id.
+
+The administrator pieces the app uses are here too: /Users/Me (demo is an
+administrator, unless --not-admin), /Sessions (the app's own playback
+plus a made-up "anna" transcoding on a TV), /ScheduledTasks with Run and
+Stop (a run takes about 10 s), and /Library/Refresh. As on Jellyfin, the
+task and scan requests are refused with 403 for a non-administrator.
 """
 
 import base64
@@ -148,6 +154,7 @@ LAST_PLAYED = {"movie-2": 2, "ep-1-2": 1}
 
 QUICK = {}
 LEGACY_ONLY = "--legacy" in sys.argv
+NOT_ADMIN = "--not-admin" in sys.argv
 
 def legacy_path(path):
     """Maps a Jellyfin 10.9+ per-user route to the 10.8 one it replaced."""
@@ -558,6 +565,101 @@ def device_of(headers):
     return "unknown"
 
 
+# ── Administrator tools ────────────────────────────────────────────────────
+
+NOW_PLAYING = {}  # device id -> {"ItemId", "PositionTicks", "IsPaused", "t"}
+TASKS = [
+    {"Id": "task-scan", "Key": "RefreshLibrary", "Name": "Scan Media Library", "Category": "Library",
+     "Description": "Scans your media library for new files and refreshes metadata."},
+    {"Id": "task-trickplay", "Key": "RefreshTrickplayImages", "Name": "Generate Trickplay Images", "Category": "Library",
+     "Description": "Creates trickplay previews for videos in enabled libraries."},
+    {"Id": "task-people", "Key": "RefreshPeople", "Name": "Refresh People", "Category": "Library",
+     "Description": "Updates metadata for actors and directors in your media library."},
+    {"Id": "task-cache", "Key": "DeleteCacheFiles", "Name": "Clean Cache Directory", "Category": "Maintenance",
+     "Description": "Deletes cache files no longer needed by the system."},
+    {"Id": "task-transcode", "Key": "DeleteTranscodeFiles", "Name": "Clean Transcode Directory", "Category": "Maintenance",
+     "Description": "Deletes transcode files more than one day old."},
+    {"Id": "task-hidden", "Key": "Hidden", "Name": "Hidden Task", "Category": "Application", "IsHidden": True,
+     "Description": "Never listed."},
+]
+for t in TASKS:
+    t.update({"State": "Idle", "CurrentProgressPercentage": None, "IsHidden": t.get("IsHidden", False), "Triggers": []})
+    t["LastExecutionResult"] = {"StartTimeUtc": iso(utc_now() - timedelta(hours=5)),
+                                "EndTimeUtc": iso(utc_now() - timedelta(hours=5)), "Status": "Completed",
+                                "Name": t["Name"], "Key": t["Key"], "Id": t["Id"]}
+TASKS[3]["LastExecutionResult"]["Status"] = "Failed"
+TASKS[3]["LastExecutionResult"]["ErrorMessage"] = "Access to the path is denied."
+TASK_LOCK = threading.Lock()
+
+
+def run_task(task):
+    """Pretends to work for about 10 s, unless stopped."""
+    start = utc_now()
+    for step in range(1, 21):
+        time.sleep(0.5)
+        with TASK_LOCK:
+            if task["State"] == "Cancelling":
+                status = "Cancelled"
+                break
+            task["CurrentProgressPercentage"] = step * 5.0
+    else:
+        status = "Completed"
+    with TASK_LOCK:
+        task.update({"State": "Idle", "CurrentProgressPercentage": None})
+        task["LastExecutionResult"] = {"StartTimeUtc": iso(start), "EndTimeUtc": iso(utc_now()), "Status": status,
+                                       "Name": task["Name"], "Key": task["Key"], "Id": task["Id"]}
+    print("admin: task", task["Name"], status)
+
+
+def start_task(task):
+    with TASK_LOCK:
+        if task["State"] != "Idle":
+            return
+        task.update({"State": "Running", "CurrentProgressPercentage": 0.0})
+    threading.Thread(target=run_task, args=(task,), daemon=True).start()
+
+
+def sessions_list(device):
+    def item_for(item_id):
+        return with_user_data(ITEMS[item_id]) if item_id in ITEMS else None
+
+    out = []
+    for dev, np in list(NOW_PLAYING.items()):
+        if time.time() - np["t"] > 960:
+            continue
+        playing = np.get("ItemId") and not np.get("Stopped")
+        session = {
+            "Id": "session-" + dev[-6:], "UserId": USER_ID, "UserName": "demo", "Client": "Nebula Player",
+            "ApplicationVersion": "0.1.0", "DeviceName": member_name(dev), "DeviceId": dev,
+            "RemoteEndPoint": "127.0.0.1", "LastActivityDate": iso(datetime.fromtimestamp(np["t"], timezone.utc)),
+            "PlayState": {"PositionTicks": np.get("PositionTicks", 0), "IsPaused": np.get("IsPaused", False),
+                          "PlayMethod": "DirectPlay" if playing else None},
+        }
+        if playing:
+            session["NowPlayingItem"] = item_for(np["ItemId"])
+        out.append(session)
+    # Someone else, watching on a TV that needs transcoding.
+    movie = MOVIES[0]
+    run = movie.get("RunTimeTicks") or 60 * 60 * 10_000_000
+    out.append({
+        "Id": "session-anna", "UserId": "anna", "UserName": "anna", "Client": "Jellyfin Android TV",
+        "ApplicationVersion": "0.18.11", "DeviceName": "Living Room TV", "DeviceId": "tv-1",
+        "RemoteEndPoint": "192.168.1.40", "LastActivityDate": iso(utc_now()),
+        "NowPlayingItem": movie,
+        "PlayState": {"PositionTicks": int(time.time() * 10_000_000) % run, "IsPaused": False, "PlayMethod": "Transcode"},
+        "TranscodingInfo": {"IsVideoDirect": False, "IsAudioDirect": True, "VideoCodec": "h264", "AudioCodec": "aac",
+                            "CompletionPercentage": 12.5,
+                            "TranscodeReasons": ["VideoCodecNotSupported", "ContainerBitrateExceedsLimit"]},
+    })
+    # An idle phone.
+    out.append({
+        "Id": "session-phone", "UserId": USER_ID, "UserName": "demo", "Client": "Jellyfin Android",
+        "ApplicationVersion": "2.6.2", "DeviceName": "Pixel 9", "DeviceId": "phone-1",
+        "LastActivityDate": iso(utc_now() - timedelta(minutes=7)), "PlayState": {},
+    })
+    return out
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stderr.write("%s %s\n" % (self.command, self.path))
@@ -667,6 +769,21 @@ class Handler(BaseHTTPRequestHandler):
             return self.send({"RequestReceptionTime": received, "ResponseTransmissionTime": iso(utc_now())})
         if not self.authed():
             return self.send({}, 401)
+        if p == "/Users/Me":
+            print("admin: who am I")
+            return self.send({"Id": USER_ID, "Name": "demo", "Policy": {"IsAdministrator": not NOT_ADMIN}})
+        if p == "/Sessions":
+            print("admin: sessions", "(own only)" if NOT_ADMIN else "")
+            sessions = sessions_list(device_of(self.headers))
+            if NOT_ADMIN:
+                sessions = [x for x in sessions if x["UserId"] == USER_ID]
+            return self.send(sessions)
+        if p == "/ScheduledTasks":
+            if NOT_ADMIN:
+                return self.send({}, 403)
+            with TASK_LOCK:
+                tasks = [dict(t) for t in TASKS if not (t["IsHidden"] and q.get("ishidden") == "false")]
+            return self.send(tasks)
         if p == "/SyncPlay/List":
             with SP_LOCK:
                 return self.send([group_info(g) for g in GROUPS.values()])
@@ -816,9 +933,23 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(auth_reply)
         if not self.authed():
             return self.send({}, 401)
+        if p == "/Library/Refresh" or (len(parts) == 3 and parts[:2] == ["ScheduledTasks", "Running"]):
+            if NOT_ADMIN:
+                print("admin: refused", p)
+                return self.send({}, 403)
+            task = TASKS[0] if p == "/Library/Refresh" else next((t for t in TASKS if t["Id"] == parts[2]), None)
+            if task is None:
+                return self.send({}, 404)
+            print("admin: start", task["Name"], "(Scan All Libraries)" if p == "/Library/Refresh" else "")
+            start_task(task)
+            return self.send(b"", 204)
         if p.startswith("/Sessions/Playing"):
             body = self.body()
             print("report", p, json.dumps(body))
+            NOW_PLAYING[device_of(self.headers)] = {
+                "ItemId": body.get("ItemId"), "PositionTicks": body.get("PositionTicks", 0),
+                "IsPaused": body.get("IsPaused", False), "Stopped": p.endswith("Stopped"), "t": time.time(),
+            }
             item = body.get("ItemId")
             if item in USER_DATA:
                 ticks = body.get("PositionTicks", 0)
@@ -846,6 +977,19 @@ class Handler(BaseHTTPRequestHandler):
         p = self.route()
         if p is None:
             return self.send({"error": "no such route on this (old) server"}, 404)
+        parts = [x for x in p.split("/") if x]
+        if len(parts) == 3 and parts[:2] == ["ScheduledTasks", "Running"]:
+            if NOT_ADMIN:
+                print("admin: refused", p)
+                return self.send({}, 403)
+            task = next((t for t in TASKS if t["Id"] == parts[2]), None)
+            if task is None:
+                return self.send({}, 404)
+            print("admin: stop", task["Name"])
+            with TASK_LOCK:
+                if task["State"] == "Running":
+                    task["State"] = "Cancelling"
+            return self.send(b"", 204)
         return self.user_flag([x for x in p.split("/") if x], False)
 
     def user_flag(self, parts, on):

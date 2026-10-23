@@ -22,6 +22,7 @@ use crate::mpv;
 use crate::settings::{AccentChoice, Settings, SkipMode, ThemeChoice};
 use cosmic::cosmic_theme::palette::Srgb;
 
+mod dashboard;
 mod details;
 mod home;
 mod library;
@@ -39,6 +40,8 @@ pub use library::{LibraryMsg, LibraryPage};
 pub use player::{PlayerMsg, PlayerUi};
 pub use local::LocalFile;
 pub use syncplay::SyncMsg;
+pub use dashboard::DashMsg;
+use dashboard::Dashboard;
 use syncplay::SyncState;
 
 /// Image widths fetched for each use (about twice the size shown, for
@@ -59,6 +62,7 @@ enum NavTarget {
     Library(Item),
     Search,
     Local,
+    Dashboard,
 }
 
 pub enum Page {
@@ -67,6 +71,8 @@ pub enum Page {
     Details(Box<DetailsPage>),
     Search,
     Local,
+    /// Administrators only (`App::admin`).
+    Dashboard,
     SignIn,
 }
 
@@ -258,6 +264,10 @@ pub enum Message {
     Reported(Result<(), String>),
     Sync(SyncMsg),
 
+    // Administrators
+    Dashboard(DashMsg),
+    AdminChecked(String, Result<bool, String>),
+
     // Local files
     OpenFile,
     FilePicked(PathBuf),
@@ -323,6 +333,9 @@ pub struct App {
     frame: Option<window_frame::Frame>,
     /// SyncPlay (watch together).
     sync: SyncState,
+    /// The signed-in user is a server administrator: the Dashboard shows.
+    admin: bool,
+    dashboard: Dashboard,
     error: Option<String>,
 }
 
@@ -393,6 +406,13 @@ impl App {
         }
         self.nav.insert().text("Search").icon(icon::from_name("system-search-symbolic")).data(NavTarget::Search);
         self.nav.insert().text("Local Files").icon(icon::from_name("folder-symbolic")).data(NavTarget::Local);
+        if self.admin {
+            self.nav
+                .insert()
+                .text("Dashboard")
+                .icon(icon::from_name("preferences-system-symbolic"))
+                .data(NavTarget::Dashboard);
+        }
         self.select_nav();
     }
 
@@ -404,6 +424,7 @@ impl App {
             (NavTarget::Home, Page::Home) => true,
             (NavTarget::Search, Page::Search) => true,
             (NavTarget::Local, Page::Local) => true,
+            (NavTarget::Dashboard, Page::Dashboard) => true,
             (NavTarget::Library(lib), Page::Library(p)) => lib.id == p.query.parent.id,
             _ => false,
         };
@@ -505,6 +526,8 @@ impl App {
         self.settings.save();
         // SyncPlay groups belong to the session that joined them.
         self.sync = SyncState::new();
+        self.admin = false;
+        self.dashboard = Dashboard::default();
         self.account = account;
         self.home = Home::default();
         self.back.clear();
@@ -512,9 +535,14 @@ impl App {
         self.images.clear();
         self.images_pending.clear();
         self.rebuild_nav();
-        if self.account.is_some() {
+        if let Some(account) = self.account.clone() {
             self.page = Page::Home;
-            self.refresh_home()
+            // Whether to offer the Dashboard.
+            let key = account.key();
+            let admin = cosmic::task::future(async move {
+                Message::AdminChecked(key, crate::admin::is_admin(&account).await)
+            });
+            Task::batch([self.refresh_home(), admin])
         } else {
             self.signin = SignIn::default();
             self.page = Page::SignIn;
@@ -1077,6 +1105,8 @@ impl Application for App {
             startup_file: flags,
             frame: None,
             sync: SyncState::new(),
+            admin: false,
+            dashboard: Dashboard::default(),
             error: None,
         };
         app.set_header_title("Nebula Player".into());
@@ -1124,6 +1154,12 @@ impl Application for App {
                 self.go(Page::Local);
                 self.scan_local()
             }
+            Some(NavTarget::Dashboard) => {
+                self.go(Page::Dashboard);
+                self.dashboard.confirm = None;
+                self.dashboard.message = None;
+                self.refresh_dashboard()
+            }
             None => Task::none(),
         };
         self.with_snap(task)
@@ -1160,6 +1196,12 @@ impl Application for App {
         if matches!(self.page, Page::Home) && self.account.is_some() {
             els.push(tip(
                 widget::button::icon(icon::from_name("view-refresh-symbolic")).on_press(Message::RefreshHome),
+                "Refresh",
+            ));
+        }
+        if matches!(self.page, Page::Dashboard) {
+            els.push(tip(
+                widget::button::icon(icon::from_name("view-refresh-symbolic")).on_press(Message::Dashboard(DashMsg::Refresh)),
                 "Refresh",
             ));
         }
@@ -1224,6 +1266,11 @@ impl Application for App {
                 crate::syncplay::socket(url, token).map(|e| Message::Sync(SyncMsg::Socket(e)))
             }));
         }
+        // The dashboard keeps up, faster while a task runs.
+        if matches!(self.page, Page::Dashboard) {
+            let every = if self.dashboard.busy() { Duration::from_secs(2) } else { Duration::from_secs(5) };
+            subs.push(time::every(every).map(|_| Message::Dashboard(DashMsg::Refresh)));
+        }
         if !self.sync.notices.is_empty() {
             subs.push(time::every(Duration::from_millis(500)).map(|_| Message::Sync(SyncMsg::NoticeTick)));
         }
@@ -1252,6 +1299,7 @@ impl Application for App {
             Page::Details(d) => self.view_details(d),
             Page::Search => self.view_search(),
             Page::Local => self.view_local(),
+            Page::Dashboard => self.view_dashboard(),
         };
         let mut col = widget::column::with_capacity(2);
         if let Some(err) = &self.error {
@@ -1618,6 +1666,16 @@ impl App {
             },
             Message::PlayerTick => return self.player_tick(),
             Message::Sync(msg) => return self.update_sync(msg),
+            Message::Dashboard(msg) => return self.update_dashboard(msg),
+            Message::AdminChecked(key, result) => {
+                if self.account.as_ref().map(|a| a.key()) == Some(key) {
+                    match result {
+                        Ok(admin) => self.admin = admin,
+                        Err(e) => log::info!("couldn't tell if this user is an administrator: {e}"),
+                    }
+                    self.rebuild_nav();
+                }
+            }
             Message::Player(msg) => return self.update_player(msg),
             Message::NextEpisode(result) => match result {
                 Ok(Some(next)) => return self.update(Message::Play { item: next, resume: false }),
