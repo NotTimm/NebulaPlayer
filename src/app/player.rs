@@ -513,9 +513,11 @@ impl App {
             layers = layers.push(notices);
         }
 
+        // A click only shows the controls (the owner's choice: pausing is for
+        // the pause button and keys); a double click is full screen.
         let area = widget::mouse_area(layers)
             .on_move(|_| Message::Player(PlayerMsg::Activity))
-            .on_press(Message::Player(PlayerMsg::TogglePause))
+            .on_press(Message::Player(PlayerMsg::Activity))
             .on_double_click(Message::Player(PlayerMsg::ToggleFullscreen));
         if ui.controls {
             area.into()
