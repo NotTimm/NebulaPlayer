@@ -76,7 +76,7 @@ Last updated 2026-10-23.
   x86_64, no auto-rebuild; first build 11184764 (alpha.1) started by
   hand. The workflow's `copr` job (secret COPR_CONFIG, project from
   the COPR_PROJECT variable, default timbo-slice/nebula-player) starts it
-  after each publish; until the owner sets COPR_CONFIG it only warns. Plan (owner, "this weekend"): one
+  after each publish (COPR_CONFIG is set: alpha.4's build started on its own). Plan (owner, "this weekend"): one
   `timbo-slice/nebula-apps` project holding both nebula-player and
   nebula-reader: here that's just setting COPR_PROJECT; the Reader's
   workflow `copr` job needs its project name changed (a workflow paste).
