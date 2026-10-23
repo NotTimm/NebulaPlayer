@@ -148,6 +148,21 @@ default, as in jellyfin-web; it's in the group menu. In mpv's own window
 (and on macOS) the app can't intercept mpv's keys, so a pause there is
 noticed and sent as a request; seeks there stay local.
 
+### Dashboard (administrators)
+
+`src/admin.rs` holds every admin request the app makes, and nothing
+else may be added there without the owner asking: `GET /Users/Me`
+(Policy.IsAdministrator decides whether the sidebar shows Dashboard),
+`GET /Sessions?activeWithinSeconds=960`, `GET /ScheduledTasks`,
+`POST /Library/Refresh` (Scan All Libraries) and `POST`/`DELETE
+/ScheduledTasks/Running/{id}` (Run/Stop). The server itself refuses the
+last three for non-admins (RequiresElevation). `src/app/dashboard.rs` is
+the page: Scan asks in a bar under its button, Run asks in the task's
+own row, and the result text sits beside the Scan button so nothing
+moves under the pointer. It reloads every 5 s, every 2 s while a task
+runs. The mock has all of these (`--not-admin` to check the page stays
+hidden; a mock task runs for about 10 s).
+
 ### Embedding
 
 Video plays inside the app's window (unless "Play in mpv's own window" is

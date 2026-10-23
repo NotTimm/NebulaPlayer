@@ -36,6 +36,10 @@ rendering and audio passthrough.
   plays, pauses, seeks and moves to the next episode together, with
   members of the same group on jellyfin-web, Jellyfin Media Player or
   phones.
+- **Dashboard** for server administrators: who's watching what and on
+  which device (direct play or transcoding, and why), Scan All
+  Libraries, and the scheduled tasks with Run and Stop. Nothing else of
+  the server's admin settings, on purpose.
 - **Local files**: add folders and play anything in them. There's no
   scraping; metadata comes from Jellyfin only.
 - Jellyfin's dark look with your desktop's accent colour (or Jellyfin's

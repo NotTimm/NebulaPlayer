@@ -37,12 +37,18 @@ no book support here, and no shared crates for now (code is copied).
 
 The owner's priorities: playback and the browsing pages Jellyfin's web
 client has, rebuilt natively (home with featured banner, libraries,
-details, seasons/episodes, search). No admin/dashboard pages. Local
-files are play-only, without scraping; metadata comes from Jellyfin.
+details, seasons/episodes, search). Local files are play-only, without
+scraping; metadata comes from Jellyfin.
+
+Admin: only the Dashboard the owner asked for (2026-10-23), for admins:
+Scan All Libraries, active sessions, scheduled tasks with Run/Stop. All
+admin requests live in `src/admin.rs` and must stay that small: no
+settings, users, libraries, plugins, schedules, restart or shutdown.
+Scan and Run ask first.
 
 ## Where things stand
 
-Last updated 2026-10-22.
+Last updated 2026-10-23.
 
 - CI: `.github/workflows/build.yml` is the full workflow modelled on
   Nebula Reader's minus COPR and winget (deb, rpm, AppImage, flatpak,
@@ -129,6 +135,14 @@ Last updated 2026-10-22.
   it doesn't happen in Xvfb. The transparent window was the suspect
   (the Reader, opaque with a native frame, doesn't flicker); unconfirmed
   until the owner tries a build.
+- Dashboard (2026-10-23, `src/admin.rs`, `src/app/dashboard.rs`): sidebar
+  entry for administrators (`/Users/Me` policy), sessions with what's
+  playing, progress, direct play/transcode and reasons, Scan All
+  Libraries and scheduled tasks with Run (confirm in the row) and Stop;
+  refreshes every 5 s (2 s while a task runs). Tested against the mock
+  (`--not-admin` hides it); not yet against a real server.
+- A click on the video no longer pauses (owner's choice); only the pause
+  button and keys do.
 - Not yet: transcoding fallback, in-app updates, zero-copy video
   (dmabuf). Embedded video seen working only in Xvfb (OpenGL through
   llvmpipe); not yet on the owner's GPU, Wayland, NVIDIA or Windows
