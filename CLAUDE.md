@@ -64,11 +64,11 @@ Last updated 2026-10-23.
   the notes file's Windows line mentioned the `vulkan` folder.
 - Released v0.1.0-alpha.3 (2026-10-22): SyncPlay and the Windows title
   bar fixes; publish run started from this session.
-- **Pending paste:** `packaging/pending/build.yml` (test installs skip
-  recommended packages, 60-minute job limits). alpha.3's .deb job sat
-  20+ min in `apt-get install` on a ~30 KB/s Azure mirror pulling
-  recommends (yt-dlp, a 27 MB pocketsphinx model); cancelled, re-run
-  with "Re-run failed jobs". Once pasted, delete the pending copy.
+- alpha.3's .deb job once sat 20+ min in `apt-get install` on a slow
+  Azure mirror (recommended packages: yt-dlp, a 27 MB pocketsphinx
+  model). Transient: later runs take ~20 s. Hardening (no recommends in
+  test installs, `timeout-minutes`) was offered and declined; it's in
+  git history (fd415dc) if wanted.
 - COPR: project `timbo-slice/nebula-player` (owner's account), package
   `nebula-player` from SCM + make srpm, chroots Fedora 43/44/45/rawhide
   x86_64, no auto-rebuild; first build 11184764 (alpha.1) started by
