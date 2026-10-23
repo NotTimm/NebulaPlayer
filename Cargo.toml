@@ -1,6 +1,6 @@
 [package]
 name = "nebula-player"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 edition = "2021"
 license = "GPL-3.0-only"
 description = "Nebula Player: a fast, native Jellyfin and local video player built on libcosmic and mpv"

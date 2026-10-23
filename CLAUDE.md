@@ -62,8 +62,10 @@ Last updated 2026-10-23.
 - Released v0.1.0-alpha.1 (2026-10-21, pre-release, every file signed
   with the reader's minisign key). Its GitHub text was published before
   the notes file's Windows line mentioned the `vulkan` folder.
-- Released v0.1.0-alpha.3 (2026-10-22): SyncPlay and the Windows title
-  bar fixes; publish run started from this session.
+- alpha.3 was never published (both publish runs cancelled while the
+  .deb job crawled). Released v0.1.0-alpha.4 (2026-10-23) instead, with
+  SyncPlay, the Windows title bar fixes, the Dashboard and no
+  click-to-pause.
 - alpha.3's .deb job once sat 20+ min in `apt-get install` on a slow
   Azure mirror (recommended packages: yt-dlp, a 27 MB pocketsphinx
   model). Transient: later runs take ~20 s. Hardening (no recommends in

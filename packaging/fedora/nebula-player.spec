@@ -8,7 +8,7 @@
 %bcond check 1
 
 Name:           nebula-player
-Version:        0.1.0~alpha.3
+Version:        0.1.0~alpha.4
 Release:        1%{?dist}
 Summary:        Native Jellyfin and local video player
 
@@ -114,8 +114,9 @@ appstream-util validate-relax --nonet %{buildroot}%{_metainfodir}/%{app_id}.meta
 %{_datadir}/icons/hicolor/*/apps/%{app_id}.*
 
 %changelog
-* Thu Oct 22 2026 Tim Singel <gamer.tdogtim@gmail.com> - 0.1.0~alpha.3-1
-- SyncPlay (watch together), one native title bar on Windows
+* Fri Oct 23 2026 Tim Singel <gamer.tdogtim@gmail.com> - 0.1.0~alpha.4-1
+- SyncPlay (watch together), a Dashboard for administrators, one native
+  title bar on Windows; a click on the video no longer pauses
 
 * Wed Oct 21 2026 Tim Singel <gamer.tdogtim@gmail.com> - 0.1.0~alpha.2-1
 - Video inside the app with Jellyfin-style controls, trickplay previews,
