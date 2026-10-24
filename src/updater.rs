@@ -571,11 +571,11 @@ mod tests {
     /// workflow uses (`echo hello`, signed with a throwaway key).
     #[test]
     fn verifies_the_cli_signature_format() {
-        let public = "RWQ2q3qR7RjECusYglM7q1KZS8GtyuOY4g3D+bh+pTDFPHF4j1VWb6Vv";
+        let public = "RWTE7o2hDzLgxo+GLI4LLCWiHfAF+mBb7YbMrKjgrMarPBHjgZdLARVn";
         let sig = "untrusted comment: signature from minisign secret key
-RUQ2q3qR7RjECscGGnGoOeNZdkPljYmeo2Tfc09zg8K2fmnYE3BSo/hkGSjIjem678difidDqZSsSBf3tKKaH4CcWIMK+Imw5A4=
+RUTE7o2hDzLgxgboiPkohRobK6zjfTykfZozWbfx9hzjzfMYY0Y8uudK+wjY5y/Uczc4p9ZAJHOqtDz9ELiYuA2Nrp+W9Im9TgM=
 trusted comment: file:NebulaPlayer-9.9.9-windows-x64-setup.exe
-tMyn56UY13CC1txxh1gU5Xkbzir0lN5ReQ3tEZe8A8ZgeY50tO/rJqGYplHlTYhkpkP2jq75ZMBf3zWcQSLfDw==
+7rVP2TL98MjcHozLnWbt2iVwBsCVGW8Xdhd0eaTgG5wbDHD2P38h/RLjqunCDD9hw4knAy33E1ePabZ5kBCQDA==
 ";
         assert!(verify(public, b"hello\n", sig, "NebulaPlayer-9.9.9-windows-x64-setup.exe").is_ok());
         assert!(verify(public, b"hello!\n", sig, "NebulaPlayer-9.9.9-windows-x64-setup.exe").is_err());

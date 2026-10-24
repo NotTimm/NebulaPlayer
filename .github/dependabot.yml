@@ -1,0 +1,35 @@
+# Dependabot opens pull requests for newer dependencies; the Build workflow
+# builds and tests each one on every platform, and merging it is all that's
+# left (merge, never squash). Security fixes come on their own as well,
+# whenever GitHub publishes an advisory for something in Cargo.lock.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "Deps"
+    groups:
+      # Compatible updates together, in one pull request a week.
+      cargo:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    ignore:
+      # Pinned to the commit of the owner's fork that Nebula Reader uses;
+      # moved by hand, together with the Reader (docs/DEVELOPING.md).
+      - dependency-name: libcosmic
+      # The same version as libcosmic's own copy, so there's only one.
+      - dependency-name: ashpd
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "CI"
+    groups:
+      actions:
+        patterns: ["*"]

@@ -155,6 +155,11 @@ Last updated 2026-10-24.
   which is why its video played outside the app.
 - **Don't build on the owner's laptop** (it eats their CPU): push and let
   GitHub CI and COPR build and test.
+- Dependabot (owner turned it on 2026-10-24; `.github/dependabot.yml`):
+  weekly grouped PRs for crates and GitHub Actions, plus security fixes.
+  CI runs on each PR; merge green ones with `gh pr merge N --merge`
+  (never squash). libcosmic (pinned with the Reader) and ashpd minor/major
+  are ignored. Its commits are dependabot's, not the owner's: that's fine.
 - Not yet: transcoding fallback, zero-copy video
   (dmabuf). Embedded video seen working only in Xvfb (OpenGL through
   llvmpipe); not yet on the owner's GPU, Wayland, NVIDIA or Windows
