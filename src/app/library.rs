@@ -199,6 +199,7 @@ impl App {
     }
 
     pub(super) fn update_library(&mut self, msg: LibraryMsg) -> Task<Message> {
+        let sizes = self.sizes();
         let super::Page::Library(lib) = &mut self.page else { return Task::none() };
         match msg {
             LibraryMsg::Loaded(generation, start, result) => {
@@ -214,7 +215,7 @@ impl App {
                             lib.total = total;
                             lib.items.resize(total, None);
                         }
-                        let keys = self.poster_keys(&items);
+                        let keys = sizes.posters(&items);
                         for (i, item) in items.into_iter().enumerate() {
                             if let Some(slot) = lib.items.get_mut(start + i) {
                                 *slot = Some(item);

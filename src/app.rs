@@ -370,6 +370,25 @@ pub(crate) fn tip<'a>(el: impl Into<Element<'a, Message>>, hint: impl Into<Cow<'
     widget::tooltip(el, widget::text(hint.into()), widget::tooltip::Position::Bottom).into()
 }
 
+/// Builds picture keys for one scale (`App::sizes`).
+#[derive(Clone, Copy)]
+pub struct Sizes(f32);
+
+impl Sizes {
+    /// `img` fetched `logical` pixels wide, in physical ones.
+    pub fn key(self, img: ImageRef, logical: f32) -> Key {
+        Key { img, width: (logical * self.0).ceil() as u32 }
+    }
+
+    pub fn posters<'a>(self, items: impl IntoIterator<Item = &'a Item>) -> Vec<Key> {
+        items.into_iter().filter_map(|i| i.poster()).map(|img| self.key(img, POSTER_W)).collect()
+    }
+
+    pub fn landscapes<'a>(self, items: impl IntoIterator<Item = &'a Item>) -> Vec<Key> {
+        items.into_iter().filter_map(|i| i.landscape()).map(|img| self.key(img, LANDSCAPE_W)).collect()
+    }
+}
+
 impl App {
     pub fn image(&self, key: &Key) -> Option<&Handle> {
         self.images.get(key).map(|p| &p.handle)
@@ -414,22 +433,15 @@ impl App {
         Task::batch(tasks)
     }
 
-    /// `logical` pixels in the window's physical ones.
-    pub fn px(&self, logical: f32) -> u32 {
-        (logical * self.core.scale_factor()).ceil() as u32
+    /// Picture keys at the window's scale; a copy, so update code can use
+    /// it while it holds a page.
+    pub fn sizes(&self) -> Sizes {
+        Sizes(self.core.scale_factor())
     }
 
     /// The key a picture is fetched and shown under, `logical` wide.
     pub fn key(&self, img: ImageRef, logical: f32) -> Key {
-        Key { img, width: self.px(logical) }
-    }
-
-    fn poster_keys<'a>(&self, items: impl IntoIterator<Item = &'a Item>) -> Vec<Key> {
-        items.into_iter().filter_map(|i| i.poster()).map(|img| self.key(img, POSTER_W)).collect()
-    }
-
-    fn landscape_keys<'a>(&self, items: impl IntoIterator<Item = &'a Item>) -> Vec<Key> {
-        items.into_iter().filter_map(|i| i.landscape()).map(|img| self.key(img, LANDSCAPE_W)).collect()
+        self.sizes().key(img, logical)
     }
 
     // ── Navigation ───────────────────────────────────────────────────────────
@@ -1393,6 +1405,7 @@ impl Application for App {
 
 impl App {
     fn handle(&mut self, message: Message) -> Task<Message> {
+        let sizes = self.sizes();
         match message {
             Message::WindowOpened => {
                 if let Some(path) = self.startup_file.take() {
@@ -1531,12 +1544,12 @@ impl App {
                         let libraries_changed = self.home.libraries.iter().map(|l| &l.id).ne(data.libraries.iter().map(|l| &l.id));
                         let mut keys: Vec<Key> = Vec::new();
                         keys.extend(data.featured.iter().filter_map(|i| i.backdrop()).map(|b| Key { img: b, width: BACKDROP_W }));
-                        keys.extend(data.featured.iter().filter_map(|i| i.logo()).map(|b| self.key(b, LOGO_W)));
-                        keys.extend(self.landscape_keys(&data.libraries));
-                        keys.extend(self.landscape_keys(&data.resume));
-                        keys.extend(self.landscape_keys(&data.next_up));
+                        keys.extend(data.featured.iter().filter_map(|i| i.logo()).map(|b| sizes.key(b, LOGO_W)));
+                        keys.extend(sizes.landscapes(&data.libraries));
+                        keys.extend(sizes.landscapes(&data.resume));
+                        keys.extend(sizes.landscapes(&data.next_up));
                         for (_, items) in &data.latest {
-                            keys.extend(self.poster_keys(items));
+                            keys.extend(sizes.posters(items));
                         }
                         let keep_featured = self.home.featured.len() == data.featured.len() && self.home.loaded;
                         let featured_at = if keep_featured { self.home.featured_at } else { 0 };
@@ -1623,14 +1636,14 @@ impl App {
                         if let Some(b) = data.item.backdrop() {
                             keys.push(Key { img: b, width: BACKDROP_W });
                         }
-                        keys.extend(self.poster_keys([&data.item]));
+                        keys.extend(sizes.posters([&data.item]));
                         if data.item.is_episode() {
-                            keys.extend(self.landscape_keys([&data.item]));
+                            keys.extend(sizes.landscapes([&data.item]));
                         }
-                        keys.extend(self.poster_keys(&data.seasons));
-                        keys.extend(self.poster_keys(&data.similar));
-                        keys.extend(self.landscape_keys(&data.episodes));
-                        keys.extend(data.item.people.iter().filter_map(|p| p.image()).map(|i| self.key(i, PERSON_W)));
+                        keys.extend(sizes.posters(&data.seasons));
+                        keys.extend(sizes.posters(&data.similar));
+                        keys.extend(sizes.landscapes(&data.episodes));
+                        keys.extend(data.item.people.iter().filter_map(|p| p.image()).map(|i| sizes.key(i, PERSON_W)));
                         d.item = data.item;
                         d.seasons = data.seasons;
                         d.season = data.season;
@@ -1666,7 +1679,7 @@ impl App {
                 d.episodes_loading = false;
                 match result {
                     Ok(eps) => {
-                        let keys = self.landscape_keys(&eps);
+                        let keys = sizes.landscapes(&eps);
                         d.episodes = eps;
                         return self.fetch_images(keys);
                     }
@@ -1726,8 +1739,8 @@ impl App {
                 self.search.loading = false;
                 match result {
                     Ok(items) => {
-                        let mut keys = self.poster_keys(items.iter().filter(|i| !i.is_episode()));
-                        keys.extend(self.landscape_keys(items.iter().filter(|i| i.is_episode())));
+                        let mut keys = sizes.posters(items.iter().filter(|i| !i.is_episode()));
+                        keys.extend(sizes.landscapes(items.iter().filter(|i| i.is_episode())));
                         self.search.searched = term;
                         self.search.results = items;
                         return self.fetch_images(keys);
