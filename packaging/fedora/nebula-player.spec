@@ -8,7 +8,7 @@
 %bcond check 1
 
 Name:           nebula-player
-Version:        0.1.0~alpha.5
+Version:        0.1.0~alpha.6
 Release:        1%{?dist}
 Summary:        Native Jellyfin and local video player
 
@@ -117,6 +117,10 @@ export NEBULA_DISTRO="Fedora package"
 %{_datadir}/icons/hicolor/*/apps/%{app_id}.*
 
 %changelog
+* Sat Oct 24 2026 Tim Singel <gamer.tdogtim@gmail.com> - 0.1.0~alpha.6-1
+- Smoother menus (pictures fetched at their shown size), a fade between
+  featured items, updated dependencies
+
 * Sat Oct 24 2026 Tim Singel <gamer.tdogtim@gmail.com> - 0.1.0~alpha.5-1
 - In-app updates (Windows, macOS), smoother scrolling on slower
   computers, pages reach the window's edges
