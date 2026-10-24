@@ -245,6 +245,16 @@ pub fn letter_button(current: bool) -> cosmic::theme::Button {
     }
 }
 
+/// Behind the pages: libcosmic's content container, which would draw it,
+/// is off (it also inset every page 7-8 px from the window's sides).
+pub fn page(theme: &cosmic::Theme) -> widget::container::Style {
+    let cosmic = theme.cosmic();
+    widget::container::Style {
+        background: Some(Background::Color(cosmic.background(theme.transparent).base.into())),
+        ..Default::default()
+    }
+}
+
 /// Behind the video, and around it when it's letterboxed.
 pub fn black(_theme: &cosmic::Theme) -> widget::container::Style {
     widget::container::Style { background: Some(Background::Color(Color::BLACK)), ..Default::default() }

@@ -1121,6 +1121,8 @@ impl Application for App {
         }
         // The sidebar opens from the header's button, over the page.
         app.core.nav_bar_set_toggled(false);
+        // Pages reach the window's edges (see theme::page).
+        app.core.window.content_container = false;
         let title = match app.core.main_window_id() {
             Some(id) => app.set_window_title("Nebula Player".into(), id),
             None => Task::none(),
@@ -1309,7 +1311,10 @@ impl Application for App {
         // A click anywhere on the page closes the sidebar, as well as
         // doing what it does.
         let close_nav = (self.core.nav_bar_active() && self.nav_model().is_some()).then_some(Message::CloseNav);
-        let page = crate::input::gestures(col).on_press_maybe(close_nav);
+        let page = widget::container(crate::input::gestures(col).on_press_maybe(close_nav))
+            .class(cosmic::theme::Container::custom(crate::theme::page))
+            .width(Length::Fill)
+            .height(Length::Fill);
         match self.sync_notices() {
             Some(notices) => cosmic::iced::widget::stack![page, notices].into(),
             None => page.into(),
