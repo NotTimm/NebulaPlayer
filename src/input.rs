@@ -8,6 +8,12 @@
 //! are done by feeding the content small pixel scroll events on each
 //! frame, so every scrollable inside works unchanged, and iced's own
 //! latching keeps a glide on the scrollable it started on.
+//!
+//! Throttling: a scrollable reports its position on every frame it moves,
+//! and each report makes the app rebuild and lay out the whole page,
+//! which slow CPUs can't do 60 times a second. `throttle` holds reports
+//! back: one goes through only when it lands in a new bucket (how coarse
+//! is up to the page), and the last one once scrolling settles.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -33,6 +39,9 @@ const VELOCITY_WINDOW: Duration = Duration::from_millis(100);
 const MIN_FLING: f32 = 180.0;
 const MAX_FLING: f32 = 9000.0;
 const STOP_SPEED: f32 = 25.0;
+/// A held-back scroll report goes through after this long without
+/// another.
+const SETTLE: Duration = Duration::from_millis(150);
 
 #[derive(Debug, Default)]
 enum Motion {
@@ -47,8 +56,7 @@ enum Motion {
     Wheel { remaining: Vector, last: Instant },
 }
 
-#[derive(Debug, Default)]
-struct State {
+struct State<Message> {
     motion: Motion,
     /// Recent touchpad deltas.
     samples: VecDeque<(Instant, Vector)>,
@@ -56,16 +64,34 @@ struct State {
     /// there, so the glide stays on what was scrolled.
     anchor: Point,
     shift: bool,
+    /// The last throttled report's bucket that went through.
+    sent: Option<i32>,
+    /// The newest report held back, and when it came.
+    held: Option<(Message, Instant)>,
+}
+
+impl<Message> Default for State<Message> {
+    fn default() -> Self {
+        State {
+            motion: Motion::Idle,
+            samples: VecDeque::new(),
+            anchor: Point::ORIGIN,
+            shift: false,
+            sent: None,
+            held: None,
+        }
+    }
 }
 
 pub struct Gestures<'a, Message> {
     content: Element<'a, Message>,
     on_press: Option<Message>,
+    bucket: Option<Box<dyn Fn(&Message) -> Option<i32> + 'a>>,
 }
 
 /// Wraps `content` in browser-like scrolling.
 pub fn gestures<'a, Message>(content: impl Into<Element<'a, Message>>) -> Gestures<'a, Message> {
-    Gestures { content: content.into(), on_press: None }
+    Gestures { content: content.into(), on_press: None, bucket: None }
 }
 
 impl<'a, Message> Gestures<'a, Message> {
@@ -75,6 +101,31 @@ impl<'a, Message> Gestures<'a, Message> {
         self.on_press = message;
         self
     }
+
+    /// Throttles the content's messages that `bucket` gives a bucket to
+    /// (scroll reports): one goes through when its bucket differs from the
+    /// last sent, the newest held back once things settle (or at a press
+    /// or key, before it).
+    pub fn throttle(mut self, bucket: impl Fn(&Message) -> Option<i32> + 'a) -> Self {
+        self.bucket = Some(Box::new(bucket));
+        self
+    }
+}
+
+/// Copies what `from` asked of the shell, other than its messages, onto
+/// `to`.
+fn forward<Message>(to: &mut Shell<'_, Message>, from: &Shell<'_, Message>) {
+    if from.is_event_captured() {
+        to.capture_event();
+    }
+    to.request_redraw_at(from.redraw_request());
+    if from.is_layout_invalid() {
+        to.invalidate_layout();
+    }
+    if from.are_widgets_invalid() {
+        to.invalidate_widgets();
+    }
+    to.request_input_method(from.input_method());
 }
 
 /// A wheel event's movement in pixels, the way scrollables read it.
@@ -93,7 +144,7 @@ fn length(v: Vector) -> f32 {
     (v.x * v.x + v.y * v.y).sqrt()
 }
 
-impl State {
+impl<Message> State<Message> {
     /// The touchpad's speed over its last few events, in pixels per second.
     fn release_velocity(&self) -> Vector {
         let Some(&(last, _)) = self.samples.back() else { return Vector::ZERO };
@@ -118,13 +169,45 @@ impl State {
     }
 }
 
-impl<'a, Message: Clone> Widget<Message, cosmic::Theme, cosmic::Renderer> for Gestures<'a, Message> {
+impl<'a, Message: Clone + 'static> Gestures<'a, Message> {
+    /// Passes the content's `messages` on, throttled.
+    fn pass(&self, state: &mut State<Message>, messages: Vec<Message>, shell: &mut Shell<'_, Message>) {
+        let Some(bucket) = &self.bucket else {
+            messages.into_iter().for_each(|m| shell.publish(m));
+            return;
+        };
+        for m in messages {
+            match bucket(&m) {
+                Some(b) if state.sent != Some(b) => {
+                    state.sent = Some(b);
+                    state.held = None;
+                    shell.publish(m);
+                }
+                Some(_) => {
+                    let now = Instant::now();
+                    state.held = Some((m, now));
+                    shell.request_redraw_at(window::RedrawRequest::At(now + SETTLE));
+                }
+                None => shell.publish(m),
+            }
+        }
+    }
+
+    /// Sends the held-back report now.
+    fn flush(state: &mut State<Message>, shell: &mut Shell<'_, Message>) {
+        if let Some((m, _)) = state.held.take() {
+            shell.publish(m);
+        }
+    }
+}
+
+impl<'a, Message: Clone + 'static> Widget<Message, cosmic::Theme, cosmic::Renderer> for Gestures<'a, Message> {
     fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<State>()
+        tree::Tag::of::<State<Message>>()
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(State::default())
+        tree::State::new(State::<Message>::default())
     }
 
     fn children(&self) -> Vec<Tree> {
@@ -159,14 +242,16 @@ impl<'a, Message: Clone> Widget<Message, cosmic::Theme, cosmic::Renderer> for Ge
         viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
-        let state = tree.state.downcast_mut::<State>();
+        let state = tree.state.downcast_mut::<State<Message>>();
         let content = &mut tree.children[0];
 
         match event {
             Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => state.shift = m.shift(),
-            // Any press or key stops a glide, as in a browser.
+            // Any press or key stops a glide, as in a browser. The app
+            // learns where the page is first: a click may leave it.
             Event::Mouse(mouse::Event::ButtonPressed(_)) | Event::Touch(touch::Event::FingerPressed { .. }) => {
                 state.motion = Motion::Idle;
+                Self::flush(state, shell);
                 // The press only does that: the page moves as the sidebar
                 // closes, so what's under the pointer isn't what was aimed at.
                 if let (true, Some(msg)) = (cursor.is_over(bounds), &self.on_press) {
@@ -175,9 +260,15 @@ impl<'a, Message: Clone> Widget<Message, cosmic::Theme, cosmic::Renderer> for Ge
                     return;
                 }
             }
-            Event::Keyboard(keyboard::Event::KeyPressed { .. }) => state.motion = Motion::Idle,
+            Event::Keyboard(keyboard::Event::KeyPressed { .. }) => {
+                state.motion = Motion::Idle;
+                Self::flush(state, shell);
+            }
             _ => {}
         }
+
+        let mut messages = Vec::new();
+        let mut local = Shell::new(&mut messages);
 
         if let Event::Mouse(mouse::Event::WheelScrolled { delta }) = event {
             if let Some(at) = cursor.position_over(bounds) {
@@ -219,6 +310,11 @@ impl<'a, Message: Clone> Widget<Message, cosmic::Theme, cosmic::Renderer> for Ge
 
         if let Event::Window(window::Event::RedrawRequested(now)) = event {
             let now = *now;
+            match state.held.as_ref().map(|(_, at)| *at) {
+                Some(at) if now.saturating_duration_since(at) >= SETTLE => Self::flush(state, shell),
+                Some(at) => shell.request_redraw_at(window::RedrawRequest::At(at + SETTLE)),
+                None => {}
+            }
             let mut step = Vector::ZERO;
             match &mut state.motion {
                 Motion::Idle => {}
@@ -271,13 +367,16 @@ impl<'a, Message: Clone> Widget<Message, cosmic::Theme, cosmic::Renderer> for Ge
                 let at = mouse::Cursor::Available(state.anchor);
                 self.content
                     .as_widget_mut()
-                    .update(content, &scroll, layout, at, renderer, clipboard, shell, viewport);
+                    .update(content, &scroll, layout, at, renderer, clipboard, &mut local, viewport);
             }
         }
 
         self.content
             .as_widget_mut()
-            .update(content, event, layout, cursor, renderer, clipboard, shell, viewport);
+            .update(content, event, layout, cursor, renderer, clipboard, &mut local, viewport);
+        forward(shell, &local);
+        drop(local);
+        self.pass(state, messages, shell);
     }
 
     fn mouse_interaction(
@@ -326,7 +425,7 @@ impl<'a, Message: Clone> Widget<Message, cosmic::Theme, cosmic::Renderer> for Ge
     }
 }
 
-impl<'a, Message: Clone + 'a> From<Gestures<'a, Message>> for Element<'a, Message> {
+impl<'a, Message: Clone + 'static> From<Gestures<'a, Message>> for Element<'a, Message> {
     fn from(g: Gestures<'a, Message>) -> Self {
         Element::new(g)
     }
@@ -338,7 +437,7 @@ mod tests {
 
     #[test]
     fn release_velocity_is_recent_motion_over_time() {
-        let mut s = State::default();
+        let mut s = State::<()>::default();
         let t0 = Instant::now();
         // 10 px every 10 ms: 1000 px/s.
         for i in 0..20u64 {

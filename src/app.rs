@@ -51,6 +51,8 @@ pub const LANDSCAPE_W: u32 = 560;
 pub const BACKDROP_W: u32 = 1920;
 pub const LOGO_W: u32 = 700;
 pub const PERSON_W: u32 = 200;
+/// How far the library grid scrolls between the reports that rebuild it.
+const SCROLL_BUCKET: f32 = 160.0;
 
 /// Items fetched per library page.
 const PAGE_SIZE: usize = 100;
@@ -1311,7 +1313,15 @@ impl Application for App {
         // A click anywhere on the page closes the sidebar, as well as
         // doing what it does.
         let close_nav = (self.core.nav_bar_active() && self.nav_model().is_some()).then_some(Message::CloseNav);
-        let page = widget::container(crate::input::gestures(col).on_press_maybe(close_nav))
+        // Scroll reports rebuild the page: the library grid needs one every
+        // SCROLL_BUCKET px to build the rows coming into view (it keeps two
+        // spare rows, far more), other pages only where scrolling stopped.
+        let step = if matches!(self.page, Page::Library(_)) { SCROLL_BUCKET } else { f32::INFINITY };
+        let gestures = crate::input::gestures(col).on_press_maybe(close_nav).throttle(move |m| match m {
+            Message::Scrolled(_, px) => Some((px / step).floor() as i32),
+            _ => None,
+        });
+        let page = widget::container(gestures)
             .class(cosmic::theme::Container::custom(crate::theme::page))
             .width(Length::Fill)
             .height(Length::Fill);
