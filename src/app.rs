@@ -30,6 +30,7 @@ mod local;
 mod player;
 mod search;
 mod settings_view;
+mod update_view;
 mod signin;
 mod syncplay;
 mod widgets;
@@ -43,6 +44,7 @@ pub use syncplay::SyncMsg;
 pub use dashboard::DashMsg;
 use dashboard::Dashboard;
 use syncplay::SyncState;
+use update_view::{UpdateMsg, Updates};
 
 /// Image widths fetched for each use (about twice the size shown, for
 /// HiDPI screens).
@@ -293,6 +295,9 @@ pub enum Message {
     SetAutoplay(bool),
     SetSkip(usize),
     OpenMpvConfig,
+    /// A web page, in the browser.
+    OpenUrl(String),
+    Update(UpdateMsg),
 
     DismissError,
     Cancelled,
@@ -338,6 +343,8 @@ pub struct App {
     /// The signed-in user is a server administrator: the Dashboard shows.
     admin: bool,
     dashboard: Dashboard,
+    /// New versions (`update_view`).
+    updates: Updates,
     error: Option<String>,
 }
 
@@ -1109,6 +1116,7 @@ impl Application for App {
             sync: SyncState::new(),
             admin: false,
             dashboard: Dashboard::default(),
+            updates: Updates::default(),
             error: None,
         };
         app.set_header_title("Nebula Player".into());
@@ -1129,7 +1137,7 @@ impl Application for App {
             Some(id) => app.set_window_title("Nebula Player".into(), id),
             None => Task::none(),
         };
-        let tasks = vec![title, app.use_account(account), app.scan_local()];
+        let tasks = vec![title, app.use_account(account), app.scan_local(), app.start_updates()];
         (app, Task::batch(tasks))
     }
 
@@ -1308,6 +1316,9 @@ impl Application for App {
         let mut col = widget::column::with_capacity(2);
         if let Some(err) = &self.error {
             col = col.push(widgets::error_banner(err));
+        }
+        for banner in self.update_banners() {
+            col = col.push(banner);
         }
         let col = col.push(body).width(Length::Fill).height(Length::Fill);
         // A click anywhere on the page closes the sidebar, as well as
@@ -1812,6 +1823,8 @@ impl App {
                 crate::platform::open(&dir.to_string_lossy());
             }
 
+            Message::OpenUrl(url) => crate::platform::open(&url),
+            Message::Update(msg) => return self.update_updates(msg),
             Message::DismissError => self.error = None,
             Message::Cancelled => {}
         }

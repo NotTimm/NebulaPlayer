@@ -487,10 +487,23 @@ jobs:
           cat app.log
           [ "$alive" = 1 ] || { echo "::warning::the app exited within 10 seconds"; exit 1; }
 
+      # What the in-app updater (src/updater.rs) unpacks: the app must come
+      # out of it intact, still signed, with no ._ metadata files.
+      - name: Check the update package
+        run: |
+          d="$(mktemp -d)"
+          tar -xzf dist/*.app.tar.gz -C "$d"
+          ls -la "$d"
+          [ "$(ls -A "$d")" = "Nebula Player.app" ] || { echo "unexpected contents"; exit 1; }
+          codesign --verify --strict --verbose=2 "$d/Nebula Player.app"
+          test -x "$d/Nebula Player.app/Contents/MacOS/nebula-player"
+
       - uses: actions/upload-artifact@v4
         with:
           name: nebula-player-macos
-          path: dist/*.dmg
+          path: |
+            dist/*.dmg
+            dist/*.app.tar.gz
           if-no-files-found: error
           retention-days: 14
 
@@ -530,7 +543,7 @@ jobs:
           public="$(tail -n 1 packaging/minisign.pub)"
           cd dist
           shopt -s nullglob
-          files=(*.deb *.rpm *.AppImage *.flatpak *.zip *-setup.exe *.dmg *-vendor.tar.xz)
+          files=(*.deb *.rpm *.AppImage *.flatpak *.zip *-setup.exe *.dmg *.app.tar.gz *-vendor.tar.xz)
           [ "${#files[@]}" -gt 0 ] || { echo "nothing to sign"; exit 1; }
           for f in "${files[@]}"; do
             printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -s "$key" -m "$f" -t "file:$f" > /dev/null
@@ -574,7 +587,7 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           shopt -s nullglob
-          for kind in '*.deb' '*.rpm' '*.AppImage' '*.flatpak' '*.zip' '*-setup.exe' '*.dmg' '*-vendor.tar.xz'; do
+          for kind in '*.deb' '*.rpm' '*.AppImage' '*.flatpak' '*.zip' '*-setup.exe' '*.dmg' '*.app.tar.gz' '*-vendor.tar.xz'; do
             # shellcheck disable=SC2206  # the glob is meant to expand
             found=(dist/$kind)
             [ "${#found[@]}" -gt 0 ] || { echo "::error::no $kind in dist"; exit 1; }

@@ -11,6 +11,8 @@ mod platform;
 mod settings;
 mod syncplay;
 mod theme;
+mod updater;
+mod updates;
 mod video;
 
 use cosmic::app::Settings;

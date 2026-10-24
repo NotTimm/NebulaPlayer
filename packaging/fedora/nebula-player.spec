@@ -85,6 +85,8 @@ in sync with the server.
 cat cargo-vendor-git.toml >> .cargo/config.toml
 
 %build
+# COPR brings new versions: the app doesn't ask GitHub (src/updates.rs).
+export NEBULA_DISTRO="Fedora package"
 %cargo_build
 %{cargo_license_summary}
 %{cargo_license} > LICENSE.dependencies
@@ -102,6 +104,7 @@ done
 desktop-file-validate %{buildroot}%{_datadir}/applications/%{app_id}.desktop
 appstream-util validate-relax --nonet %{buildroot}%{_metainfodir}/%{app_id}.metainfo.xml
 %if %{with check}
+export NEBULA_DISTRO="Fedora package"
 %cargo_test
 %endif
 

@@ -69,6 +69,12 @@ pub struct Settings {
     pub sync_correction: bool,
     pub speed_to_sync: bool,
     pub skip_to_sync: bool,
+    /// Ask GitHub for a newer release on start.
+    pub check_for_updates: bool,
+    /// The version that last ran, to say "updated" once after an update.
+    pub last_version: Option<String>,
+    /// A newer release whose banner was closed; a later one shows again.
+    pub dismissed_update: Option<String>,
 }
 
 impl Default for Settings {
@@ -86,6 +92,9 @@ impl Default for Settings {
             sync_correction: false,
             speed_to_sync: true,
             skip_to_sync: true,
+            check_for_updates: true,
+            last_version: None,
+            dismissed_update: None,
         }
     }
 }
@@ -97,6 +106,11 @@ fn path() -> PathBuf {
 impl Settings {
     pub fn load() -> Self {
         std::fs::read(path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    }
+
+    /// Whether settings were ever saved (by this version or an older one).
+    pub fn exists() -> bool {
+        path().exists()
     }
 
     pub fn save(&self) {

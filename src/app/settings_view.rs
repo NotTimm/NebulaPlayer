@@ -59,17 +59,7 @@ impl App {
 
         let playback = widget::settings::section()
             .title("Playback (mpv)")
-            .add(widget::settings::item("Start full screen", widget::toggler(s.fullscreen).on_toggle(Message::SetFullscreen)));
-        // macOS always plays in mpv's own window.
-        let playback = if crate::mpv::separate_only() {
-            playback
-        } else {
-            playback.add(widget::settings::item(
-                "Play in mpv's own window",
-                widget::toggler(s.separate_window).on_toggle(Message::SetSeparateWindow),
-            ))
-        };
-        let playback = playback
+            .add(widget::settings::item("Start full screen", widget::toggler(s.fullscreen).on_toggle(Message::SetFullscreen)))
             .add(widget::settings::item("Hardware decoding", widget::toggler(s.hwdec).on_toggle(Message::SetHwdec)))
             .add(widget::settings::item(
                 "Play the next episode",
@@ -88,19 +78,21 @@ impl App {
                 widget::button::standard("Open Folder").on_press(Message::OpenMpvConfig),
             ));
 
-        let about = widget::settings::section().title("About").add(widget::settings::item_row(vec![
-            widget::text::caption(match crate::mpv::api_version() {
-                Some(v) => format!("Nebula Player {} · {v}", env!("CARGO_PKG_VERSION")),
-                None => format!("Nebula Player {} · {}", env!("CARGO_PKG_VERSION"), crate::mpv::INSTALL_HINT),
-            })
-            .into(),
-        ]));
+        // Videos play inside the app; mpv's own window is for the few who
+        // want mpv's controls. macOS always uses it.
+        let experimental = (!crate::mpv::separate_only()).then(|| {
+            widget::settings::section().title("Experimental").add(widget::settings::item(
+                "Play in mpv's own window",
+                widget::toggler(s.separate_window).on_toggle(Message::SetSeparateWindow),
+            ))
+        });
 
-        widget::column::with_capacity(4)
+        widget::column::with_capacity(5)
             .push(account)
             .push(look)
             .push(playback)
-            .push(about)
+            .push_maybe(experimental)
+            .push(self.view_about())
             .spacing(24)
             .width(Length::Fill)
             .into()

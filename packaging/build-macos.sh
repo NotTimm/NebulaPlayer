@@ -118,6 +118,14 @@ codesign --verify --strict --verbose=2 "$APP"
 echo "==> Checking the bundled mpv runs"
 "$APP/Contents/MacOS/$APP_NAME" --check-mpv
 
+echo "==> Packing the in-app update"
+# What the app downloads to update itself (src/updater.rs): the signed .app
+# as is. COPYFILE_DISABLE keeps macOS's ._ metadata files out of it.
+UPDATE="$DIST_DIR/$PRODUCT-$VERSION-macos-$ARCH.app.tar.gz"
+rm -f "$UPDATE"
+COPYFILE_DISABLE=1 tar -czf "$UPDATE" -C "$STAGE" "$(basename "$APP")"
+echo "==> $UPDATE"
+
 echo "==> Building the disk image"
 DMG_ROOT="$STAGE/dmg"
 mkdir -p "$DMG_ROOT"

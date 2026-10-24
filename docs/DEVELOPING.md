@@ -69,7 +69,12 @@ from the group ("… ms behind the group").
 - `src/video.rs`: video inside the app's window (see "Embedding").
 - `src/input.rs`: browser-like scrolling around every page (wheel steps
   glide, touchpad swipes keep going after the fingers lift) and the
-  click-anywhere that closes the sidebar.
+  click-anywhere that closes the sidebar. It also throttles the page's
+  scroll reports: each one rebuilds and lays out the whole page, so the
+  library grid gets one per 160 px (enough to build the rows coming into
+  view) and other pages only where scrolling stopped.
+- `src/updates.rs`, `src/updater.rs`: the update check and in-app updates
+  (see "In-app updates"); their UI is `src/app/update_view.rs`.
 - `src/jellyfin.rs`: the API client (sign-in, home sections, browsing,
   images, PlaybackInfo, playback reports).
 - `src/images.rs`: images are fetched at display size, cached on disk
@@ -233,6 +238,10 @@ package `nebula-player` builds from SCM (clone URL
 runs `.copr/Makefile` to download the release's tarballs), with
 auto-rebuild off: a build only works once the release exists.
 
+The spec sets `NEBULA_DISTRO="Fedora package"`: the app then skips the
+GitHub update check and About says updates come from the package manager
+(`updates::distro`).
+
 The workflow's `copr` job starts that build after each publish, using the
 `COPR_CONFIG` secret (the whole config block from
 copr.fedorainfracloud.org/api; the token expires every 180 days, so
@@ -250,6 +259,23 @@ repository secrets `MINISIGN_KEY` (the whole encrypted secret key file) and
 public key in `packaging/minisign.pub`). The `sign` job checks every
 signature against that public key. Without the secrets, builds and
 releases go out unsigned, with a warning.
+
+### In-app updates
+
+Ported from Nebula Reader. On start (Settings → About → "Check for
+updates on start") the app asks GitHub's releases API for the newest
+release, pre-releases included (`/releases/latest` skips them, and every
+release here is one), and shows a banner above the pages when there's a
+newer one. The Windows installer, the Windows zip and the Mac app update
+themselves (`src/updater.rs`): they download their package (the setup
+`.exe`, the `.zip`, or `NebulaPlayer-<version>-macos-arm64.app.tar.gz`,
+which `build-macos.sh` packs and the macOS job checks), refuse it unless
+its signature checks out against `PUBLIC_KEY` with the trusted comment
+`file:<name>`, and put it in place when the user restarts. Every other
+install says how to get the new version (`Install::how_to_update`).
+
+Releases before 0.1.0-alpha.5 can't update themselves: the first in-app
+update is from alpha.5 to the release after it.
 
 ## Releases
 
