@@ -48,7 +48,7 @@ Scan and Run ask first.
 
 ## Where things stand
 
-Last updated 2026-10-23.
+Last updated 2026-10-24.
 
 - CI: `.github/workflows/build.yml` is the full workflow modelled on
   Nebula Reader's minus COPR and winget (deb, rpm, AppImage, flatpak,
@@ -145,7 +145,17 @@ Last updated 2026-10-23.
   (`--not-admin` hides it); not yet against a real server.
 - A click on the video no longer pauses (owner's choice); only the pause
   button and keys do.
-- Not yet: transcoding fallback, in-app updates, zero-copy video
+- 2026-10-24: pages reach the window's edges (libcosmic's content
+  container off: it inset everything 7-8 px); scroll reports throttled in
+  `src/input.rs` (each rebuilt the whole page every frame: the laptop's
+  stutter); in-app updates ported from Nebula Reader (`src/updates.rs`,
+  `src/updater.rs`, `src/app/update_view.rs`; pre-releases included, the
+  COPR build doesn't check: NEBULA_DISTRO); "Play in mpv's own window"
+  moved to an Experimental section. The owner's laptop had it switched on,
+  which is why its video played outside the app.
+- **Don't build on the owner's laptop** (it eats their CPU): push and let
+  GitHub CI and COPR build and test.
+- Not yet: transcoding fallback, zero-copy video
   (dmabuf). Embedded video seen working only in Xvfb (OpenGL through
   llvmpipe); not yet on the owner's GPU, Wayland, NVIDIA or Windows
   (software renderer there).
