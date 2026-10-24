@@ -291,7 +291,7 @@ fn extract_zip(data: &[u8], dest: &Path) -> Result<(), String> {
     let mut entries = Vec::new();
     for i in 0..zip.len() {
         let file = zip.by_index(i).map_err(|e| format!("bad zip: {e}"))?;
-        let name = file.name().replace('\\', "/");
+        let name = file.name().map_err(|e| format!("bad zip: {e}"))?.replace('\\', "/");
         let parts: Vec<&str> = name.split('/').filter(|p| !p.is_empty()).collect();
         if parts.iter().any(|p| *p == ".." || p.contains(':')) || name.starts_with('/') {
             return Err(format!("bad path in zip: {name}"));
