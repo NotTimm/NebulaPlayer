@@ -8,7 +8,7 @@
 %bcond check 1
 
 Name:           nebula-player
-Version:        0.1.0~alpha.4
+Version:        0.1.0~alpha.5
 Release:        1%{?dist}
 Summary:        Native Jellyfin and local video player
 
@@ -117,6 +117,10 @@ export NEBULA_DISTRO="Fedora package"
 %{_datadir}/icons/hicolor/*/apps/%{app_id}.*
 
 %changelog
+* Sat Oct 24 2026 Tim Singel <gamer.tdogtim@gmail.com> - 0.1.0~alpha.5-1
+- In-app updates (Windows, macOS), smoother scrolling on slower
+  computers, pages reach the window's edges
+
 * Fri Oct 23 2026 Tim Singel <gamer.tdogtim@gmail.com> - 0.1.0~alpha.4-1
 - SyncPlay (watch together), a Dashboard for administrators, one native
   title bar on Windows; a click on the video no longer pauses

@@ -3488,7 +3488,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-player"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 dependencies = [
  "ashpd 0.12.3",
  "env_logger",
