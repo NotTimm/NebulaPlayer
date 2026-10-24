@@ -18,7 +18,7 @@ reqwest = { version = "0.12", features = ["json", "blocking"] }
 # The session's WebSocket, for SyncPlay (src/syncplay.rs).
 tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
 # libmpv is loaded at run time (src/mpv.rs), not linked.
-libloading = "0.8"
+libloading = "0.9"
 # In-app updates (src/updater.rs): signature checks and the Windows zip.
 minisign-verify = "0.3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
