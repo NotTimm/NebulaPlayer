@@ -71,14 +71,22 @@ from the group ("… ms behind the group").
   glide, touchpad swipes keep going after the fingers lift) and the
   click-anywhere that closes the sidebar. It also throttles the page's
   scroll reports: each one rebuilds and lays out the whole page, so the
-  library grid gets one per 160 px (enough to build the rows coming into
-  view) and other pages only where scrolling stopped.
+  library grid gets one per row scrolled past (enough to build the rows
+  coming into view) and other pages only where scrolling stopped.
+- `src/fade.rs`: the featured banner's fade between items, drawn frame by
+  frame without rebuilding the page.
 - `src/updates.rs`, `src/updater.rs`: the update check and in-app updates
   (see "In-app updates"); their UI is `src/app/update_view.rs`.
 - `src/jellyfin.rs`: the API client (sign-in, home sections, browsing,
   images, PlaybackInfo, playback reports).
 - `src/images.rs`: images are fetched at display size, cached on disk
-  (keyed by the server's image tag) and decoded off the UI thread.
+  (keyed by the server's image tag) and decoded off the UI thread. They
+  reach the app in batches (`images::arrivals`), so a page rebuilds once
+  for many pictures. "Display size" is strict: the constants in
+  `src/app.rs` (`POSTER_W` and the rest) are logical pixels, times the
+  window's scale, and a picture 1.25× its box or more gets re-sampled
+  (Lanczos) by libcosmic's iced on the UI thread each time it's shown.
+  Profiling scrolling showed that as the UI thread's biggest cost.
 - `src/app.rs`: state, messages and navigation. The pages live in
   `src/app/` (`home`, `library`, `details`, `search`, `local`, `signin`,
   `settings_view`, `player`, with shared cards in `widgets`). A library

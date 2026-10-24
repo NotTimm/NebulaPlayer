@@ -46,15 +46,21 @@ use dashboard::Dashboard;
 use syncplay::SyncState;
 use update_view::{UpdateMsg, Updates};
 
-/// Image widths fetched for each use (about twice the size shown, for
-/// HiDPI screens).
-pub const POSTER_W: u32 = 320;
-pub const LANDSCAPE_W: u32 = 560;
+/// Pictures are fetched at about the size they're shown (in logical
+/// pixels here, times the window's scale: `App::px`), and never 1.25×
+/// it or more: libcosmic's iced re-samples a picture that much bigger
+/// than its box with Lanczos, on the UI thread, every time it comes into
+/// view, which made scrolling stutter. Card posters (150 wide on the home
+/// screen, 146–180 in a library grid) share one size.
+pub const POSTER_W: f32 = 176.0;
+/// Landscape cards (272 wide) and episode rows (224).
+pub const LANDSCAPE_W: f32 = 272.0;
+/// Title art, fitted into a 420 × 130 box.
+pub const LOGO_W: f32 = 420.0;
+pub const PERSON_W: f32 = 110.0;
+/// Backdrops fill the window's width: too big to be re-sampled, so these
+/// are physical pixels.
 pub const BACKDROP_W: u32 = 1920;
-pub const LOGO_W: u32 = 700;
-pub const PERSON_W: u32 = 200;
-/// How far the library grid scrolls between the reports that rebuild it.
-const SCROLL_BUCKET: f32 = 160.0;
 
 /// Items fetched per library page.
 const PAGE_SIZE: usize = 100;
@@ -89,6 +95,9 @@ pub struct Home {
     pub latest: Vec<(Item, Vec<Item>)>,
     pub featured: Vec<Item>,
     pub featured_at: usize,
+    /// The banner fading out (to `featured_next`) or back in.
+    pub featured_fade: Option<crate::fade::Phase>,
+    pub featured_next: usize,
     pub loaded: bool,
     pub loading: bool,
 }
@@ -240,7 +249,11 @@ pub enum Message {
     FeaturedTick,
     FeaturedStep(i32),
     FeaturedPick(usize),
-    ImageLoaded(Key, Result<images::Picture, String>),
+    /// Halfway through the banner's fade: show the next item.
+    FeaturedSwap,
+    /// The banner has faded back in.
+    FeaturedShown,
+    ImagesLoaded(Vec<images::Arrival>),
     Open(Item),
     Library(LibraryMsg),
     DetailsLoaded(String, Result<Box<DetailsData>, String>),
@@ -366,6 +379,27 @@ impl App {
         self.images.get(key)
     }
 
+    /// Fades the banner out, to item `i`, and back in. A fade already
+    /// going just changes where it's heading.
+    fn feature(&mut self, i: usize) -> Task<Message> {
+        let home = &mut self.home;
+        if home.featured_fade.is_none() && i == home.featured_at {
+            return Task::none();
+        }
+        home.featured_next = i;
+        match home.featured_fade {
+            Some(crate::fade::Phase::Out(_)) => Task::none(),
+            // Fading in (or not fading): fade out again from here.
+            _ => {
+                home.featured_fade = Some(crate::fade::Phase::Out(Instant::now()));
+                cosmic::task::future(async {
+                    tokio::time::sleep(crate::fade::DURATION).await;
+                    Message::FeaturedSwap
+                })
+            }
+        }
+    }
+
     /// Starts loading the images not already here or on the way.
     fn fetch_images(&mut self, keys: impl IntoIterator<Item = Key>) -> Task<Message> {
         let Some(account) = self.account.clone() else { return Task::none() };
@@ -374,25 +408,28 @@ impl App {
             if self.images.contains_key(&key) || !self.images_pending.insert(key.clone()) {
                 continue;
             }
-            let account = account.clone();
-            tasks.push(cosmic::task::future(async move {
-                let result = images::load(account, key.clone()).await;
-                Message::ImageLoaded(key, result)
-            }));
+            // It comes back through `images::arrivals`, in a batch.
+            tasks.push(cosmic::iced::Task::future(images::load_to_queue(account.clone(), key)).discard());
         }
         Task::batch(tasks)
     }
 
-    fn poster_keys<'a>(items: impl IntoIterator<Item = &'a Item>) -> Vec<Key> {
-        items.into_iter().filter_map(|i| i.poster()).map(|img| Key { img, width: POSTER_W }).collect()
+    /// `logical` pixels in the window's physical ones.
+    pub fn px(&self, logical: f32) -> u32 {
+        (logical * self.core.scale_factor()).ceil() as u32
     }
 
-    fn landscape_keys<'a>(items: impl IntoIterator<Item = &'a Item>) -> Vec<Key> {
-        items.into_iter().filter_map(|i| i.landscape()).map(|img| Key { img, width: LANDSCAPE_W }).collect()
+    /// The key a picture is fetched and shown under, `logical` wide.
+    pub fn key(&self, img: ImageRef, logical: f32) -> Key {
+        Key { img, width: self.px(logical) }
     }
 
-    fn key(img: ImageRef, width: u32) -> Key {
-        Key { img, width }
+    fn poster_keys<'a>(&self, items: impl IntoIterator<Item = &'a Item>) -> Vec<Key> {
+        items.into_iter().filter_map(|i| i.poster()).map(|img| self.key(img, POSTER_W)).collect()
+    }
+
+    fn landscape_keys<'a>(&self, items: impl IntoIterator<Item = &'a Item>) -> Vec<Key> {
+        items.into_iter().filter_map(|i| i.landscape()).map(|img| self.key(img, LANDSCAPE_W)).collect()
     }
 
     // ── Navigation ───────────────────────────────────────────────────────────
@@ -1258,6 +1295,7 @@ impl Application for App {
                 _ => None,
             }));
         }
+        subs.push(Subscription::run(images::arrivals).map(Message::ImagesLoaded));
         #[cfg(target_os = "linux")]
         subs.push(crate::theme::accent_changes().map(Message::DesktopAccent));
         if self.playing_inside() {
@@ -1324,10 +1362,14 @@ impl Application for App {
         // A click anywhere on the page closes the sidebar, as well as
         // doing what it does.
         let close_nav = (self.core.nav_bar_active() && self.nav_model().is_some()).then_some(Message::CloseNav);
-        // Scroll reports rebuild the page: the library grid needs one every
-        // SCROLL_BUCKET px to build the rows coming into view (it keeps two
-        // spare rows, far more), other pages only where scrolling stopped.
-        let step = if matches!(self.page, Page::Library(_)) { SCROLL_BUCKET } else { f32::INFINITY };
+        // Scroll reports rebuild the page: the library grid needs one per
+        // row scrolled past, to build the row coming into view (it keeps
+        // two spare rows either side), other pages only where scrolling
+        // stopped.
+        let step = match &self.page {
+            Page::Library(lib) => lib.row_height().max(1.0),
+            _ => f32::INFINITY,
+        };
         let gestures = crate::input::gestures(col).on_press_maybe(close_nav).throttle(move |m| match m {
             Message::Scrolled(_, px) => Some((px / step).floor() as i32),
             _ => None,
@@ -1488,13 +1530,13 @@ impl App {
                     Ok(data) => {
                         let libraries_changed = self.home.libraries.iter().map(|l| &l.id).ne(data.libraries.iter().map(|l| &l.id));
                         let mut keys: Vec<Key> = Vec::new();
-                        keys.extend(data.featured.iter().filter_map(|i| i.backdrop()).map(|b| Self::key(b, BACKDROP_W)));
-                        keys.extend(data.featured.iter().filter_map(|i| i.logo()).map(|b| Self::key(b, LOGO_W)));
-                        keys.extend(Self::landscape_keys(&data.libraries));
-                        keys.extend(Self::landscape_keys(&data.resume));
-                        keys.extend(Self::landscape_keys(&data.next_up));
+                        keys.extend(data.featured.iter().filter_map(|i| i.backdrop()).map(|b| Key { img: b, width: BACKDROP_W }));
+                        keys.extend(data.featured.iter().filter_map(|i| i.logo()).map(|b| self.key(b, LOGO_W)));
+                        keys.extend(self.landscape_keys(&data.libraries));
+                        keys.extend(self.landscape_keys(&data.resume));
+                        keys.extend(self.landscape_keys(&data.next_up));
                         for (_, items) in &data.latest {
-                            keys.extend(Self::poster_keys(items));
+                            keys.extend(self.poster_keys(items));
                         }
                         let keep_featured = self.home.featured.len() == data.featured.len() && self.home.loaded;
                         let featured_at = if keep_featured { self.home.featured_at } else { 0 };
@@ -1506,6 +1548,8 @@ impl App {
                             // A refresh keeps the banner where it is.
                             featured: if keep_featured { std::mem::take(&mut self.home.featured) } else { data.featured },
                             featured_at,
+                            featured_fade: None,
+                            featured_next: featured_at,
                             loaded: true,
                             loading: false,
                         };
@@ -1518,28 +1562,50 @@ impl App {
                 }
             }
             Message::FeaturedTick => {
-                if !self.home.featured.is_empty() {
-                    self.home.featured_at = (self.home.featured_at + 1) % self.home.featured.len();
+                // Not while a step or pick is still fading.
+                if !self.home.featured.is_empty() && self.home.featured_fade.is_none() {
+                    return self.feature((self.home.featured_at + 1) % self.home.featured.len());
                 }
             }
             Message::FeaturedStep(step) => {
                 let n = self.home.featured.len() as i32;
                 if n > 0 {
-                    self.home.featured_at = ((self.home.featured_at as i32 + step).rem_euclid(n)) as usize;
+                    // From where a running fade is heading, so quick clicks add up.
+                    let from = if self.home.featured_fade.is_some() { self.home.featured_next } else { self.home.featured_at };
+                    return self.feature(((from as i32 + step).rem_euclid(n)) as usize);
                 }
             }
             Message::FeaturedPick(i) => {
                 if i < self.home.featured.len() {
-                    self.home.featured_at = i;
+                    return self.feature(i);
                 }
             }
-            Message::ImageLoaded(key, result) => {
-                self.images_pending.remove(&key);
-                match result {
-                    Ok(h) => {
-                        self.images.insert(key, h);
+            // (Unless a refresh of the home screen ended the fade.)
+            Message::FeaturedSwap if matches!(self.home.featured_fade, Some(crate::fade::Phase::Out(_))) => {
+                if self.home.featured_next < self.home.featured.len() {
+                    self.home.featured_at = self.home.featured_next;
+                }
+                self.home.featured_fade = Some(crate::fade::Phase::In(Instant::now()));
+                return cosmic::task::future(async {
+                    tokio::time::sleep(crate::fade::DURATION).await;
+                    Message::FeaturedShown
+                });
+            }
+            Message::FeaturedSwap => {}
+            Message::FeaturedShown => {
+                if matches!(self.home.featured_fade, Some(crate::fade::Phase::In(_))) {
+                    self.home.featured_fade = None;
+                }
+            }
+            Message::ImagesLoaded(batch) => {
+                for (key, result) in batch {
+                    self.images_pending.remove(&key);
+                    match result {
+                        Ok(h) => {
+                            self.images.insert(key, h);
+                        }
+                        Err(e) => log::debug!("image {:?}: {e}", key.img),
                     }
-                    Err(e) => log::debug!("image {:?}: {e}", key.img),
                 }
             }
             Message::Open(item) => return self.open_item(item),
@@ -1555,19 +1621,16 @@ impl App {
                         let data = *data;
                         let mut keys = Vec::new();
                         if let Some(b) = data.item.backdrop() {
-                            keys.push(Self::key(b, BACKDROP_W));
+                            keys.push(Key { img: b, width: BACKDROP_W });
                         }
-                        if let Some(l) = data.item.logo() {
-                            keys.push(Self::key(l, LOGO_W));
-                        }
-                        keys.extend(Self::poster_keys([&data.item]));
+                        keys.extend(self.poster_keys([&data.item]));
                         if data.item.is_episode() {
-                            keys.extend(Self::landscape_keys([&data.item]));
+                            keys.extend(self.landscape_keys([&data.item]));
                         }
-                        keys.extend(Self::poster_keys(&data.seasons));
-                        keys.extend(Self::poster_keys(&data.similar));
-                        keys.extend(Self::landscape_keys(&data.episodes));
-                        keys.extend(data.item.people.iter().filter_map(|p| p.image()).map(|i| Self::key(i, PERSON_W)));
+                        keys.extend(self.poster_keys(&data.seasons));
+                        keys.extend(self.poster_keys(&data.similar));
+                        keys.extend(self.landscape_keys(&data.episodes));
+                        keys.extend(data.item.people.iter().filter_map(|p| p.image()).map(|i| self.key(i, PERSON_W)));
                         d.item = data.item;
                         d.seasons = data.seasons;
                         d.season = data.season;
@@ -1603,7 +1666,7 @@ impl App {
                 d.episodes_loading = false;
                 match result {
                     Ok(eps) => {
-                        let keys = Self::landscape_keys(&eps);
+                        let keys = self.landscape_keys(&eps);
                         d.episodes = eps;
                         return self.fetch_images(keys);
                     }
@@ -1663,8 +1726,8 @@ impl App {
                 self.search.loading = false;
                 match result {
                     Ok(items) => {
-                        let mut keys = Self::poster_keys(items.iter().filter(|i| !i.is_episode()));
-                        keys.extend(Self::landscape_keys(items.iter().filter(|i| i.is_episode())));
+                        let mut keys = self.poster_keys(items.iter().filter(|i| !i.is_episode()));
+                        keys.extend(self.landscape_keys(items.iter().filter(|i| i.is_episode())));
                         self.search.searched = term;
                         self.search.results = items;
                         return self.fetch_images(keys);

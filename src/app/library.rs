@@ -73,6 +73,11 @@ impl LibraryPage {
         }
     }
 
+    /// A row's height and the gap under it, at the grid's last width.
+    pub fn row_height(&self) -> f32 {
+        Grid::at(self.size.get().width).row_h
+    }
+
     /// Starts over for a changed query: everything is fetched again.
     fn reset(&mut self) {
         self.generation += 1;
@@ -209,7 +214,7 @@ impl App {
                             lib.total = total;
                             lib.items.resize(total, None);
                         }
-                        let keys = Self::poster_keys(&items);
+                        let keys = self.poster_keys(&items);
                         for (i, item) in items.into_iter().enumerate() {
                             if let Some(slot) = lib.items.get_mut(start + i) {
                                 *slot = Some(item);

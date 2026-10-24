@@ -4,6 +4,7 @@
 mod admin;
 mod app;
 mod images;
+mod fade;
 mod input;
 mod jellyfin;
 mod mpv;

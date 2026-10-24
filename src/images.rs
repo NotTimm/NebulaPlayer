@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use cosmic::widget::image::Handle;
-use tokio::sync::Semaphore;
+use tokio::sync::{mpsc, Mutex, Semaphore};
 
 use crate::jellyfin::{Account, ImageRef, TrickplayInfo};
 
@@ -42,6 +42,46 @@ pub struct Picture {
     pub handle: Handle,
     pub width: u32,
     pub height: u32,
+}
+
+/// A picture that finished loading, or why it couldn't.
+pub type Arrival = (Key, Result<Picture, String>);
+
+/// Waits this long after a picture arrives for others to join it: the page
+/// rebuilds once per batch, not once per picture (a library scrolled into
+/// new rows brings dozens).
+const BATCH_WINDOW: std::time::Duration = std::time::Duration::from_millis(40);
+
+fn arrivals_queue() -> &'static (mpsc::UnboundedSender<Arrival>, Mutex<mpsc::UnboundedReceiver<Arrival>>) {
+    static Q: OnceLock<(mpsc::UnboundedSender<Arrival>, Mutex<mpsc::UnboundedReceiver<Arrival>>)> = OnceLock::new();
+    Q.get_or_init(|| {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (tx, Mutex::new(rx))
+    })
+}
+
+/// Loads `key` and hands it to `arrivals`.
+pub async fn load_to_queue(account: Account, key: Key) {
+    let result = load(account, key.clone()).await;
+    let _ = arrivals_queue().0.send((key, result));
+}
+
+/// Loaded pictures, in batches (a subscription).
+pub fn arrivals() -> impl cosmic::iced::futures::Stream<Item = Vec<Arrival>> {
+    use cosmic::iced::futures::SinkExt;
+    cosmic::iced::stream::channel(4, async |mut out: cosmic::iced::futures::channel::mpsc::Sender<Vec<Arrival>>| {
+        let mut rx = arrivals_queue().1.lock().await;
+        while let Some(first) = rx.recv().await {
+            let mut batch = vec![first];
+            tokio::time::sleep(BATCH_WINDOW).await;
+            while let Ok(more) = rx.try_recv() {
+                batch.push(more);
+            }
+            if out.send(batch).await.is_err() {
+                break;
+            }
+        }
+    })
 }
 
 pub async fn load(account: Account, key: Key) -> Result<Picture, String> {

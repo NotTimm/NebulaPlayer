@@ -11,7 +11,8 @@ use super::{App, DetailsPage, Key, Message, BACKDROP_W, LANDSCAPE_W, POSTER_W};
 use crate::jellyfin::Item;
 
 const BANNER_H: f32 = 380.0;
-const POSTER: (f32, f32) = (200.0, 300.0);
+/// About the card posters' size, so it's the same picture (`POSTER_W`).
+const POSTER: (f32, f32) = (180.0, 270.0);
 const EPISODE_THUMB: (f32, f32) = (224.0, 126.0);
 
 impl App {
@@ -69,9 +70,9 @@ impl App {
     /// Poster, title, facts, overview and the buttons.
     fn summary<'a>(&'a self, d: &'a DetailsPage) -> Element<'a, Message> {
         let item = &d.item;
-        let poster_key = item.poster().map(|img| Key { img, width: POSTER_W });
+        let poster_key = item.poster().map(|img| self.key(img, POSTER_W));
         let poster = if item.is_episode() {
-            let key = item.landscape().map(|img| Key { img, width: LANDSCAPE_W });
+            let key = item.landscape().map(|img| self.key(img, LANDSCAPE_W));
             picture(key.as_ref().and_then(|k| self.image(k)), LANDSCAPE.0 * 1.2, LANDSCAPE.1 * 1.2, "video-display-symbolic")
         } else {
             picture(poster_key.as_ref().and_then(|k| self.image(k)), POSTER.0, POSTER.1, "video-x-generic-symbolic")
@@ -189,7 +190,7 @@ impl App {
 
     fn episode_row<'a>(&'a self, ep: &'a Item) -> Element<'a, Message> {
         let (w, h) = EPISODE_THUMB;
-        let key = ep.landscape().map(|img| Key { img, width: LANDSCAPE_W });
+        let key = ep.landscape().map(|img| self.key(img, LANDSCAPE_W));
         let mut thumb = stack![picture(key.as_ref().and_then(|k| self.image(k)), w, h, "video-display-symbolic")];
         if let Some(p) = ep.progress().filter(|_| !ep.played()) {
             thumb = thumb.push(

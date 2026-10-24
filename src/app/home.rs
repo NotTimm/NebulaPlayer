@@ -75,7 +75,7 @@ impl App {
                 .class(cosmic::theme::Container::custom(style))
         };
 
-        let title: Element<'_, Message> = match item.logo().and_then(|l| self.picture(&Key { img: l, width: LOGO_W })) {
+        let title: Element<'_, Message> = match item.logo().and_then(|l| self.picture(&self.key(l, LOGO_W))) {
             // Sized to fit its box keeping its shape, so it sits flush left.
             Some(p) if p.width > 0 && p.height > 0 => {
                 let scale = (LOGO_BOX.0 / p.width as f32).min(LOGO_BOX.1 / p.height as f32);
@@ -107,11 +107,13 @@ impl App {
                 .align_y(Alignment::Center),
         );
 
-        // One dot per featured item; the current one is the accent.
+        // One dot per featured item; the current one (or the one a fade
+        // is heading to) is the accent. They stay put while the rest fades.
+        let lit = if self.home.featured_fade.is_some() { self.home.featured_next } else { self.home.featured_at };
         let dots = widget::row::with_children(
             (0..self.home.featured.len())
                 .map(|i| {
-                    let name = if i == self.home.featured_at { "media-record-symbolic" } else { "radio-symbolic" };
+                    let name = if i == lit { "media-record-symbolic" } else { "radio-symbolic" };
                     widget::button::icon(icon::from_name(name).size(10))
                         .padding(2)
                         .on_press(Message::FeaturedPick(i))
@@ -120,13 +122,18 @@ impl App {
                 .collect::<Vec<_>>(),
         )
         .spacing(2);
-        info = info.push(dots);
-
-        let content = widget::container(info)
+        let dots = widget::container(dots)
             .width(Length::Fill)
             .height(Length::Fixed(HERO_H))
             .align_bottom(Length::Fixed(HERO_H))
             .padding([24, 56, 16, 56]);
+
+        // Room at the bottom for the dots (14 high) and the column's gap.
+        let content = widget::container(info)
+            .width(Length::Fill)
+            .height(Length::Fixed(HERO_H))
+            .align_bottom(Length::Fixed(HERO_H))
+            .padding([24, 56, 42, 56]);
         let arrows = widget::row::with_capacity(3)
             .push(widget::button::icon(icon::from_name("go-previous-symbolic")).on_press(Message::FeaturedStep(-1)))
             .push(widget::Space::new().width(Length::Fill).height(Length::Shrink))
@@ -135,13 +142,7 @@ impl App {
             .padding([0, 8])
             .height(Length::Fixed(HERO_H));
 
-        stack![
-            backdrop,
-            shade(crate::theme::side_fade),
-            shade(crate::theme::backdrop_fade),
-            content,
-            arrows,
-        ]
-        .into()
+        let banner = stack![backdrop, shade(crate::theme::side_fade), shade(crate::theme::backdrop_fade), content];
+        stack![crate::fade::fade(banner, self.home.featured_fade), dots, arrows].into()
     }
 }

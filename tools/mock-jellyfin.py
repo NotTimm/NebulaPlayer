@@ -222,6 +222,15 @@ def image(item_id, kind, max_width):
     a = ((seed >> 16) & 0xFF, (seed >> 8) & 0xFF, seed & 0xFF)
     b = (0xAA, 0x5C, 0xC3) if seed % 2 else (0x00, 0xA4, 0xDC)
     rows = []
+    if kind != "Logo":
+        # A top-to-bottom gradient, a row at a time: fast enough for a
+        # library of thousands (pixel by pixel took ~0.3 s a poster).
+        for y in range(h):
+            t = y / max(h - 1, 1)
+            rows.append(bytes((*(int(a[i] * (1 - t) + b[i] * t) for i in range(3)), 255)) * w)
+        data = png(w, h, rows)
+        IMAGE_CACHE[key] = data
+        return data
     for y in range(h):
         row = bytearray()
         for x in range(w):
@@ -805,7 +814,7 @@ class Handler(BaseHTTPRequestHandler):
         if p == f"{user}/Items/Latest":
             parent = q.get("parentid")
             items = MOVIES[::-1] if parent == "lib-movies" else [SERIES] if parent == "lib-shows" else []
-            return self.send([with_user_data(i) for i in items])
+            return self.send([with_user_data(i) for i in items[:int(q.get("limit", 20))]])
         if p == f"{user}/Items":
             if "searchterm" in q and "parentid" not in q:
                 term = q["searchterm"].lower()

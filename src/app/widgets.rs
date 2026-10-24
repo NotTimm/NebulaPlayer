@@ -5,7 +5,7 @@ use cosmic::iced::{Alignment, ContentFit, Length};
 use cosmic::widget::{self, icon, image::Handle};
 use cosmic::Element;
 
-use super::{App, Key, Message, LANDSCAPE_W, PERSON_W, POSTER_W};
+use super::{App, Message, LANDSCAPE_W, PERSON_W, POSTER_W};
 use crate::jellyfin::{Item, Person};
 
 pub const POSTER: (f32, f32) = (150.0, 225.0);
@@ -153,7 +153,7 @@ impl App {
     /// A poster card with its picture `w` × `h`. Its title stays on one
     /// line, so cards side by side are all the same height.
     pub fn poster_card_sized<'a>(&'a self, item: &'a Item, w: f32, h: f32) -> Element<'a, Message> {
-        let key = item.poster().map(|img| Key { img, width: POSTER_W });
+        let key = item.poster().map(|img| self.key(img, POSTER_W));
         let pic = picture(key.as_ref().and_then(|k| self.image(k)), w, h, icon_for(item));
         let title = match item.kind.as_str() {
             "Episode" => item.series_name.clone().unwrap_or_else(|| item.name.clone()),
@@ -182,7 +182,7 @@ impl App {
     /// away (`plays`); others open the item's page.
     pub fn landscape_card<'a>(&'a self, item: &'a Item, plays: bool) -> Element<'a, Message> {
         let (w, h) = LANDSCAPE;
-        let key = item.landscape().map(|img| Key { img, width: LANDSCAPE_W });
+        let key = item.landscape().map(|img| self.key(img, LANDSCAPE_W));
         let pic = picture(key.as_ref().and_then(|k| self.image(k)), w, h, icon_for(item));
         let (title, sub) = if item.is_episode() {
             let code = item.episode_code().map(|c| format!("{c} · ")).unwrap_or_default();
@@ -207,7 +207,7 @@ impl App {
     /// A library on the home screen's My Media row.
     pub fn library_tile<'a>(&'a self, lib: &'a Item) -> Element<'a, Message> {
         let (w, h) = LANDSCAPE;
-        let key = lib.landscape().map(|img| Key { img, width: LANDSCAPE_W });
+        let key = lib.landscape().map(|img| self.key(img, LANDSCAPE_W));
         let card = widget::column::with_capacity(2)
             .push(picture(key.as_ref().and_then(|k| self.image(k)), w, h, "folder-videos-symbolic"))
             .push(widget::text::body(truncate(&lib.name, 36)))
@@ -218,7 +218,7 @@ impl App {
 
     pub fn person_card<'a>(&'a self, p: &'a Person) -> Element<'a, Message> {
         let (w, h) = PERSON;
-        let key = p.image().map(|img| Key { img, width: PERSON_W });
+        let key = p.image().map(|img| self.key(img, PERSON_W));
         let role = p.role.clone().filter(|r| !r.is_empty()).or_else(|| p.kind.clone()).unwrap_or_default();
         widget::column::with_capacity(3)
             .push(picture(key.as_ref().and_then(|k| self.image(k)), w, h, "avatar-default-symbolic"))

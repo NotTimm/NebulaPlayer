@@ -83,7 +83,7 @@ impl App {
                     Ok(sessions) => sessions
                         .iter()
                         .filter_map(|s| s.now_playing_item.as_ref()?.landscape())
-                        .map(|img| Key { img, width: LANDSCAPE_W })
+                        .map(|img| self.key(img, LANDSCAPE_W))
                         .collect(),
                     Err(_) => Vec::new(),
                 };
@@ -254,7 +254,7 @@ impl App {
                         info = info.push(widget::text::caption(reasons));
                     }
                 }
-                let key = item.landscape().map(|img| Key { img, width: LANDSCAPE_W });
+                let key = item.landscape().map(|img| self.key(img, LANDSCAPE_W));
                 picture(key.as_ref().and_then(|k| self.image(k)), w, h, "video-x-generic-symbolic")
             }
             None => {
