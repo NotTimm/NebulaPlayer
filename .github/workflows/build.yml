@@ -58,7 +58,7 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - id: v
         name: Read the version from Cargo.toml
@@ -108,7 +108,7 @@ jobs:
     name: Tests and checks
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install build dependencies
         run: |
@@ -137,7 +137,7 @@ jobs:
     needs: version
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install build dependencies
         run: |
@@ -165,7 +165,7 @@ jobs:
           nebula-player --version
           nebula-player --check-mpv
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nebula-player-deb
           path: dist/*.deb
@@ -186,7 +186,7 @@ jobs:
             git tar zstd gcc gcc-c++ make pkgconf-pkg-config rpm-build \
             libxkbcommon-devel wayland-devel openssl-devel
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Mark the checkout as safe for git
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -213,7 +213,7 @@ jobs:
           nebula-player --version
           nebula-player --check-mpv
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nebula-player-rpm
           path: dist/*.rpm
@@ -225,7 +225,7 @@ jobs:
     needs: version
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # libmpv2 is what gets bundled.
       - name: Install build dependencies
@@ -252,7 +252,7 @@ jobs:
             APPIMAGE_EXTRACT_AND_RUN=1 "$f" --check-mpv
           done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nebula-player-appimage
           path: dist/NebulaPlayer-*.AppImage
@@ -266,9 +266,9 @@ jobs:
     name: cargo-sources.json
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -277,7 +277,7 @@ jobs:
           pip install aiohttp tomlkit pyyaml
           bash packaging/gen-cargo-sources.sh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cargo-sources
           path: packaging/cargo-sources.json
@@ -292,9 +292,9 @@ jobs:
       image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
       options: --privileged
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: cargo-sources
           path: packaging
@@ -316,7 +316,7 @@ jobs:
           flatpak install --user -y --noninteractive "NebulaPlayer-${{ needs.version.outputs.version }}-x86_64.flatpak"
           flatpak run --command=nebula-player io.github.NotTimm.NebulaPlayer --check-mpv
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nebula-player-flatpak
           path: NebulaPlayer-*.flatpak
@@ -328,14 +328,14 @@ jobs:
     needs: version
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Vendor
         run: bash packaging/fedora/make-vendor.sh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nebula-player-vendor
           path: dist/*-vendor.tar.xz
@@ -354,9 +354,9 @@ jobs:
       - name: Install tools
         run: dnf install -y --setopt=install_weak_deps=False git tar rpm-build dnf-plugins-core
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: nebula-player-vendor
           path: rpmbuild/SOURCES
@@ -380,7 +380,7 @@ jobs:
     needs: version
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Inno Setup (for the installer)
         shell: pwsh
@@ -426,7 +426,7 @@ jobs:
           for ($i = 0; $i -lt 60 -and (Test-Path $exe); $i++) { Start-Sleep -Seconds 1 }
           if (Test-Path $exe) { throw 'uninstall left the exe behind' }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nebula-player-windows
           path: |
@@ -440,7 +440,7 @@ jobs:
     needs: version
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install build dependencies
         run: brew install mpv dylibbundler
@@ -498,7 +498,7 @@ jobs:
           codesign --verify --strict --verbose=2 "$d/Nebula Player.app"
           test -x "$d/Nebula Player.app/Contents/MacOS/nebula-player"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nebula-player-macos
           path: |
@@ -513,12 +513,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       # Only for the public key the signatures are checked against.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: packaging/minisign.pub
           sparse-checkout-cone-mode: false
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: nebula-player-*
           path: dist
@@ -551,7 +551,7 @@ jobs:
             echo "signed $f"
           done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nebula-player-signatures
           path: dist/*.minisig
@@ -566,11 +566,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: packaging/release-notes
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: nebula-player-*
           path: dist
