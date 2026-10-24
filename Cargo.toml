@@ -21,7 +21,7 @@ tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
 libloading = "0.8"
 # In-app updates (src/updater.rs): signature checks and the Windows zip.
 minisign-verify = "0.3"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 # The owner's fork of pop-os/libcosmic, the same one Nebula Reader uses and
 # pinned to the same commit (its patches are listed in NebulaReader's
