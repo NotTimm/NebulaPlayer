@@ -65,6 +65,14 @@ impl App {
                 "Play the next episode",
                 widget::toggler(s.autoplay_next).on_toggle(Message::SetAutoplay),
             ))
+            .add_maybe((!crate::platform::native_titlebar()).then(|| {
+                // Where the app draws the title bar, it's the only way to
+                // move or close the window while a video plays.
+                widget::settings::item(
+                    "Show the title bar while playing",
+                    widget::toggler(s.player_title_bar).on_toggle(Message::SetPlayerTitleBar),
+                )
+            }))
             .add(widget::settings::item(
                 "Intros and credits",
                 widget::dropdown(

@@ -143,6 +143,11 @@ Last updated 2026-10-24.
   Libraries and scheduled tasks with Run (confirm in the row) and Stop;
   refreshes every 5 s (2 s while a task runs). Tested against the mock
   (`--not-admin` hides it); not yet against a real server.
+- While a video plays in the window the title bar stays (setting "Show
+  the title bar while playing", on by default; only offered where the
+  app draws its own title bar, so COSMIC/GNOME): with it hidden there
+  was no way to move or close the window without the Super key. Full
+  screen hides it; the header has no page buttons while playing.
 - A click on the video no longer pauses (owner's choice); only the pause
   button and keys do.
 - 2026-10-24: pages reach the window's edges (libcosmic's content

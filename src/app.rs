@@ -306,6 +306,7 @@ pub enum Message {
     SetHwdec(bool),
     SetSeparateWindow(bool),
     SetAutoplay(bool),
+    SetPlayerTitleBar(bool),
     SetSkip(usize),
     OpenMpvConfig,
     /// A web page, in the browser.
@@ -1246,7 +1247,9 @@ impl Application for App {
     }
 
     fn header_start(&self) -> Vec<Element<'_, Self::Message>> {
-        if self.back.is_empty() {
+        // While a video plays the header is just the title bar; the
+        // player's own top bar has Back and SyncPlay.
+        if self.back.is_empty() || self.playing_inside() {
             return Vec::new();
         }
         vec![tip(widget::button::icon(icon::from_name("go-previous-symbolic")).on_press(Message::Back), "Back (Esc)")]
@@ -1254,6 +1257,9 @@ impl Application for App {
 
     fn header_end(&self) -> Vec<Element<'_, Self::Message>> {
         let mut els = Vec::new();
+        if self.playing_inside() {
+            return els;
+        }
         if matches!(self.page, Page::Home) && self.account.is_some() {
             els.push(tip(
                 widget::button::icon(icon::from_name("view-refresh-symbolic")).on_press(Message::RefreshHome),
@@ -1892,6 +1898,13 @@ impl App {
             Message::SetAutoplay(on) => {
                 self.settings.autoplay_next = on;
                 self.settings.save();
+            }
+            Message::SetPlayerTitleBar(on) => {
+                self.settings.player_title_bar = on;
+                self.settings.save();
+                if self.playing_inside() {
+                    self.core.window.show_headerbar = self.player_title_bar();
+                }
             }
             Message::OpenMpvConfig => {
                 let dir = crate::platform::mpv_config_dir();

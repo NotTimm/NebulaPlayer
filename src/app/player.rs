@@ -182,7 +182,7 @@ impl App {
         if let Some(p) = &self.player {
             self.player_ui.state = p.state();
         }
-        self.core.window.show_headerbar = false;
+        self.core.window.show_headerbar = self.player_title_bar();
         self.core.window.show_context = false;
         if self.settings.fullscreen {
             return self.set_fullscreen(true);
@@ -192,8 +192,8 @@ impl App {
 
     /// Back to the pages, as they were.
     pub(super) fn leave_player(&mut self) -> cosmic::app::Task<Message> {
-        self.core.window.show_headerbar = true;
         let task = if self.player_ui.fullscreen { self.set_fullscreen(false) } else { cosmic::app::Task::none() };
+        self.core.window.show_headerbar = true;
         self.player_ui = PlayerUi::default();
         // The page comes back from scratch, scrolled to the top: once it's
         // there, back to where it was.
@@ -205,8 +205,17 @@ impl App {
         cosmic::app::Task::batch([task, rescroll])
     }
 
+    /// Whether the title bar stays up while a video plays in the window:
+    /// the user's choice where the app draws it (COSMIC, GNOME…), never in
+    /// full screen, and never where the system draws its own (libcosmic's
+    /// header would only be an empty strip under it).
+    pub(super) fn player_title_bar(&self) -> bool {
+        self.settings.player_title_bar && !self.player_ui.fullscreen && !crate::platform::native_titlebar()
+    }
+
     fn set_fullscreen(&mut self, on: bool) -> cosmic::app::Task<Message> {
         self.player_ui.fullscreen = on;
+        self.core.window.show_headerbar = self.player_title_bar();
         let Some(id) = self.core.main_window_id() else { return cosmic::app::Task::none() };
         let mode = if on { window::Mode::Fullscreen } else { window::Mode::Windowed };
         window::set_mode(id, mode)

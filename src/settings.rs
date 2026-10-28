@@ -60,6 +60,9 @@ pub struct Settings {
     pub hwdec: bool,
     /// Episodes play on into the next one.
     pub autoplay_next: bool,
+    /// Keep the window's title bar (and its close button) while a video
+    /// plays in the window, where the app draws the title bar itself.
+    pub player_title_bar: bool,
     /// Intros, credits and the like.
     pub skip: SkipMode,
     /// Folders listed on the Local Files page.
@@ -87,6 +90,7 @@ impl Default for Settings {
             separate_window: false,
             hwdec: true,
             autoplay_next: true,
+            player_title_bar: true,
             skip: SkipMode::Ask,
             local_folders: Vec::new(),
             sync_correction: false,
